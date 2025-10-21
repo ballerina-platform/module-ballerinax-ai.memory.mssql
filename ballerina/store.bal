@@ -16,7 +16,6 @@
 
 import ballerina/ai;
 import ballerina/cache;
-import ballerina/lang.value;
 import ballerina/sql;
 import ballerinax/mssql;
 
@@ -253,18 +252,17 @@ public isolated class ShortTermMemoryStore {
     }
 
     private isolated function initializeDatabase() returns Error? {
-        // sql:ExecutionResult|sql:Error result = self.dbClient->execute(`
-        //         IF OBJECT_ID('ChatMessages', 'U') IS NULL
-        //         BEGIN
-        //             CREATE TABLE ChatMessages ( 
-        //                 Id INT IDENTITY(1,1) PRIMARY KEY, 
-        //                 MessageKey NVARCHAR(100) NOT NULL, 
-        //                 MessageRole NVARCHAR(20) NOT NULL CHECK (MessageRole IN ('user', 'system', 'assistant', 'function')), 
-        //                 MessageJson NVARCHAR(MAX) NOT NULL, 
-        //                 CreatedAt DATETIME2 NOT NULL DEFAULT SYSDATETIME()
-        //             );
-        //         END
-        //     `);
+        int|sql:Error tableExists = self.dbClient->queryRow(
+            `SELECT IIF(OBJECT_ID('dbo.ChatMessages', 'U') IS NOT NULL, 1, 0) AS TableExists;`);
+
+        if tableExists is sql:Error {
+            return error("Failed to check existence of the ChatMessages table: " + tableExists.message(), 
+                            tableExists);
+        }
+
+        if tableExists == 1 {
+            return;
+        }
 
         sql:ExecutionResult|sql:Error result = self.dbClient->execute(
             `CREATE TABLE ChatMessages ( 
@@ -275,12 +273,6 @@ public isolated class ShortTermMemoryStore {
                 CreatedAt DATETIME2 NOT NULL DEFAULT SYSDATETIME()
             );`);
         if result is sql:Error {
-            // Workaround for what seems like a connector issue.
-            map<value:Cloneable> & readonly detail = result.detail();
-            if detail is sql:DatabaseErrorDetail && detail.errorCode == OBJECT_EXISTS_ERROR_CODE {
-                // Table already exists
-                return;
-            }
             return error("Failed to create ChatMessages table: " + result.message(), result);
         }
     }
