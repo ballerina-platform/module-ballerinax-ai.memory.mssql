@@ -64,8 +64,9 @@ public isolated class ShortTermMemoryStore {
 
     public isolated function getChatSystemMessage(string key) returns ai:ChatSystemMessage|ai:MemoryError? {
         lock {
-            if self.cache.hasKey(key) {
-                return (check self.getCacheEntry(key)).systemMessage;
+            CachedMessages? cacheEntry = self.getCacheEntry(key);
+            if cacheEntry is CachedMessages {
+                return cacheEntry.systemMessage;
             }
         }
 
@@ -90,9 +91,9 @@ public isolated class ShortTermMemoryStore {
 
     public isolated function getChatInteractiveMessages(string key) returns ai:ChatInteractiveMessage[]|ai:MemoryError {
         lock {
-            if self.cache.hasKey(key) {
-                CachedMessages cachedMessages = check self.getCacheEntry(key);
-                return cachedMessages.interactiveMessages.clone();
+            CachedMessages? cacheEntry = self.getCacheEntry(key);
+            if cacheEntry is CachedMessages {
+                return cacheEntry.interactiveMessages.clone();
             }
         }
 
@@ -111,13 +112,13 @@ public isolated class ShortTermMemoryStore {
     public isolated function getAll(string key) 
             returns [ai:ChatSystemMessage, ai:ChatInteractiveMessage...]|ai:ChatInteractiveMessage[]|ai:MemoryError {
         lock {
-            if self.cache.hasKey(key) {
-                CachedMessages cachedMessages = check self.getCacheEntry(key);
-                final readonly & ai:ChatSystemMessage? systemMessage = cachedMessages.systemMessage;
+            CachedMessages? cacheEntry = self.getCacheEntry(key);
+            if cacheEntry is CachedMessages {
+                final readonly & ai:ChatSystemMessage? systemMessage = cacheEntry.systemMessage;
                 if systemMessage is ai:ChatSystemMessage {
-                    return [systemMessage, ...cachedMessages.interactiveMessages].clone();
+                    return [systemMessage, ...cacheEntry.interactiveMessages].clone();
                 }
-                return cachedMessages.interactiveMessages.clone();
+                return cacheEntry.interactiveMessages.clone();
             }
         }
 
@@ -138,13 +139,16 @@ public isolated class ShortTermMemoryStore {
         ChatMessageDatabaseMessage dbMessage = transformToDatabaseMessage(message);
 
         if dbMessage is ChatSystemMessageDatabaseMessage {
-            // Remove existing system message for the key
-            sql:ExecutionResult|sql:Error deleteResult = self.dbClient->execute(`
-                UPDATE ChatMessages 
-                SET MessageJson = ${dbMessage.toJsonString()}
-                WHERE MessageKey = ${key} AND MessageRole = 'system'`);
-            if deleteResult is sql:Error {
-                return error("Failed to delete existing system message: " + deleteResult.message(), deleteResult);
+            // Upsert system message for the key
+            sql:ExecutionResult|sql:Error upsertResult = self.dbClient->execute(`
+                IF EXISTS (SELECT 1 FROM ChatMessages WHERE MessageKey = ${key} AND MessageRole = 'system')
+                    UPDATE ChatMessages SET MessageJson = ${dbMessage.toJsonString()}
+                    WHERE MessageKey = ${key} AND MessageRole = 'system'
+                ELSE
+                    INSERT INTO ChatMessages (MessageKey, MessageRole, MessageJson) 
+                    VALUES (${key}, ${dbMessage.role}, ${dbMessage.toJsonString()})`);
+            if upsertResult is sql:Error {
+                return error("Failed to upsert system message: " + upsertResult.message(), upsertResult);
             }
         } else {
             sql:ExecutionResult|sql:Error result = self.dbClient->execute(`
@@ -157,12 +161,12 @@ public isolated class ShortTermMemoryStore {
 
         final readonly & ai:ChatMessage immutableMessage = mapToImmutableMessage(message);
         lock {
-            if self.cache.hasKey(key) {
-                CachedMessages cachedMessages = check self.getCacheEntry(key);
+            CachedMessages? cacheEntry = self.getCacheEntry(key);
+            if cacheEntry is CachedMessages {
                 if immutableMessage is ai:ChatSystemMessage {
-                    cachedMessages.systemMessage = immutableMessage;
+                    cacheEntry.systemMessage = immutableMessage;
                 } else {
-                    cachedMessages.interactiveMessages.push(immutableMessage);
+                    cacheEntry.interactiveMessages.push(immutableMessage);
                 }
                 return;
             }
@@ -179,15 +183,6 @@ public isolated class ShortTermMemoryStore {
     }
 
     public isolated function removeChatSystemMessage(string key) returns ai:MemoryError? {
-        lock {
-            if self.cache.hasKey(key) {
-                CachedMessages cachedMessages = check self.getCacheEntry(key);
-                if cachedMessages.hasKey("systemMessage") {
-                    cachedMessages.systemMessage = ();
-                }
-            }
-        }
-
         sql:ExecutionResult|sql:Error deleteResult = self.dbClient->execute(`
                 DELETE FROM ChatMessages 
                 WHERE MessageKey = ${key} AND MessageRole = 'system'`);
@@ -195,22 +190,18 @@ public isolated class ShortTermMemoryStore {
             self.removeCacheEntry(key);
             return error("Failed to delete existing system message: " + deleteResult.message(), deleteResult);
         }
-    }
 
-    public isolated function removeChatInteractiveMessages(string key, int? count = ()) returns ai:MemoryError? {
         lock {
-            if self.cache.hasKey(key) {
-                ai:ChatInteractiveMessage[] interactiveMessages = (check self.getCacheEntry(key)).interactiveMessages;
-                if count is () || count >= interactiveMessages.length() {
-                    interactiveMessages.removeAll();
-                } else {
-                    foreach int i in 0...count {
-                        _ = interactiveMessages.shift();
-                    }
+            CachedMessages? cacheEntry = self.getCacheEntry(key);
+            if cacheEntry is CachedMessages {
+                if cacheEntry.hasKey("systemMessage") {
+                    cacheEntry.systemMessage = ();
                 }
             }
         }
+    }
 
+    public isolated function removeChatInteractiveMessages(string key, int? count = ()) returns ai:MemoryError? {
         if count is () {
             sql:ExecutionResult|sql:Error result = self.dbClient->execute(`
                 DELETE FROM ChatMessages 
@@ -220,26 +211,45 @@ public isolated class ShortTermMemoryStore {
                 return error("Failed to delete chat messages: " + result.message(), result);
             }
             return;
+        } else {
+            sql:ExecutionResult|sql:Error result = self.dbClient->execute(`
+                DELETE FROM ChatMessages 
+                WHERE Id IN (
+                    SELECT TOP(${count}) Id 
+                    FROM ChatMessages 
+                    WHERE MessageKey = ${key} AND MessageRole != 'system'
+                    ORDER BY CreatedAt ASC
+                )`);
+            if result is sql:Error {
+                self.removeCacheEntry(key);
+                return error("Failed to delete chat messages: " + result.message(), result);
+            }
         }
 
-        sql:ExecutionResult|sql:Error result = self.dbClient->execute(`
-            DELETE TOP(${count}) FROM ChatMessages 
-            WHERE MessageKey = ${key} AND MessageRole != 'system'
-            ORDER BY CreatedAt ASC`);
-        if result is sql:Error {
-            self.removeCacheEntry(key);
-            return error("Failed to delete chat messages: " + result.message(), result);
+        lock {
+            CachedMessages? cacheEntry = self.getCacheEntry(key);
+            if cacheEntry is CachedMessages {
+                ai:ChatInteractiveMessage[] interactiveMessages = cacheEntry.interactiveMessages;
+                if count is () || count >= interactiveMessages.length() {
+                    interactiveMessages.removeAll();
+                } else {
+                    foreach int i in 0 ..< count {
+                        _ = interactiveMessages.shift();
+                    }
+                }
+            }
         }
     }
 
     public isolated function removeAll(string key) returns ai:MemoryError? {
-        self.removeCacheEntry(key);
         sql:ExecutionResult|sql:Error result = self.dbClient->execute(`
                 DELETE FROM ChatMessages 
                 WHERE MessageKey = ${key}`);
         if result is sql:Error {
+            self.removeCacheEntry(key);    
             return error("Failed to delete chat messages: " + result.message(), result);
         }
+        self.removeCacheEntry(key);
     }
 
     private isolated function initializeDatabase() returns Error? {
@@ -324,14 +334,19 @@ public isolated class ShortTermMemoryStore {
         }
     }
 
-    private isolated function getCacheEntry(string key) returns CachedMessages|Error {
+    private isolated function getCacheEntry(string key) returns CachedMessages? {
         lock {
-            do {
-                any cacheEntry = check self.cache.get(key);
-                return check cacheEntry.ensureType();
-            } on fail error err {
-                return error("Failed to retrieve cache entry: " + err.message(), err);
+            if !self.cache.hasKey(key) {
+                return ();
             }
+
+            any|cache:Error cacheEntry = self.cache.get(key);
+            if cacheEntry is cache:Error {
+                return ();
+            }
+
+            // Since we have sole control over what is stored in the cache, this cast is safe.
+            return checkpanic cacheEntry.ensureType();
         }
     }
 }
