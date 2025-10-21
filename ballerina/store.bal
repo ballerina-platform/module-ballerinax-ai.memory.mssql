@@ -15,8 +15,9 @@
 // under the License.
 
 import ballerina/ai;
-import ballerina/sql;
+import ballerina/cache;
 import ballerina/lang.value;
+import ballerina/sql;
 import ballerinax/mssql;
 
 const OBJECT_EXISTS_ERROR_CODE = 2714;
@@ -43,7 +44,7 @@ public isolated class ShortTermMemoryStore {
     *ai:ShortTermMemoryStore;
 
     private final mssql:Client dbClient;
-    private final map<CachedMessages> cache = {};
+    private final cache:Cache cache = new ({capacity: 20});
     // TODO
     private final int maximumRecordCount;
 
@@ -64,7 +65,7 @@ public isolated class ShortTermMemoryStore {
     public isolated function getChatSystemMessage(string key) returns ai:ChatSystemMessage|ai:MemoryError? {
         lock {
             if self.cache.hasKey(key) {
-                return self.cache.get(key).systemMessage;
+                return (check self.getCacheEntry(key)).systemMessage;
             }
         }
 
@@ -90,7 +91,7 @@ public isolated class ShortTermMemoryStore {
     public isolated function getChatInteractiveMessages(string key) returns ai:ChatInteractiveMessage[]|ai:MemoryError {
         lock {
             if self.cache.hasKey(key) {
-                CachedMessages cachedMessages = self.cache.get(key);
+                CachedMessages cachedMessages = check self.getCacheEntry(key);
                 return cachedMessages.interactiveMessages.clone();
             }
         }
@@ -111,7 +112,7 @@ public isolated class ShortTermMemoryStore {
             returns [ai:ChatSystemMessage, ai:ChatInteractiveMessage...]|ai:ChatInteractiveMessage[]|ai:MemoryError {
         lock {
             if self.cache.hasKey(key) {
-                CachedMessages cachedMessages = self.cache.get(key);
+                CachedMessages cachedMessages = check self.getCacheEntry(key);
                 final readonly & ai:ChatSystemMessage? systemMessage = cachedMessages.systemMessage;
                 if systemMessage is ai:ChatSystemMessage {
                     return [systemMessage, ...cachedMessages.interactiveMessages].clone();
@@ -157,7 +158,7 @@ public isolated class ShortTermMemoryStore {
         final readonly & ai:ChatMessage immutableMessage = mapToImmutableMessage(message);
         lock {
             if self.cache.hasKey(key) {
-                CachedMessages cachedMessages = self.cache.get(key);
+                CachedMessages cachedMessages = check self.getCacheEntry(key);
                 if immutableMessage is ai:ChatSystemMessage {
                     cachedMessages.systemMessage = immutableMessage;
                 } else {
@@ -165,10 +166,14 @@ public isolated class ShortTermMemoryStore {
                 }
                 return;
             }
-            if immutableMessage is ai:ChatSystemMessage {
-                self.cache[key] = {systemMessage: immutableMessage, interactiveMessages: []};
-            } else {
-                self.cache[key] = {interactiveMessages: [immutableMessage]};
+            do {
+                if immutableMessage is ai:ChatSystemMessage {
+                    check self.cache.put(key, <CachedMessages> {systemMessage: immutableMessage, interactiveMessages: []});
+                } else {
+                    check self.cache.put(key, <CachedMessages> {interactiveMessages: [immutableMessage]});
+                }
+            } on fail {
+                self.removeCacheEntry(key);
             }
         }
     }
@@ -176,7 +181,7 @@ public isolated class ShortTermMemoryStore {
     public isolated function removeChatSystemMessage(string key) returns ai:MemoryError? {
         lock {
             if self.cache.hasKey(key) {
-                CachedMessages cachedMessages = self.cache.get(key);
+                CachedMessages cachedMessages = check self.getCacheEntry(key);
                 if cachedMessages.hasKey("systemMessage") {
                     cachedMessages.systemMessage = ();
                 }
@@ -195,7 +200,7 @@ public isolated class ShortTermMemoryStore {
     public isolated function removeChatInteractiveMessages(string key, int? count = ()) returns ai:MemoryError? {
         lock {
             if self.cache.hasKey(key) {
-                ai:ChatInteractiveMessage[] interactiveMessages = self.cache.get(key).interactiveMessages;
+                ai:ChatInteractiveMessage[] interactiveMessages = (check self.getCacheEntry(key)).interactiveMessages;
                 if count is () || count >= interactiveMessages.length() {
                     interactiveMessages.removeAll();
                 } else {
@@ -294,7 +299,8 @@ public isolated class ShortTermMemoryStore {
             final ai:ChatInteractiveMessage[] & readonly immutableInteractiveMessages = interactiveMessages.cloneReadOnly();
             lock {
                 if !self.cache.hasKey(key) {
-                    self.cache[key] = {systemMessage, interactiveMessages: [...immutableInteractiveMessages]};
+                    check self.cache.put(
+                        key, {systemMessage, interactiveMessages: [...immutableInteractiveMessages]});
                 }
             }
 
@@ -302,7 +308,7 @@ public isolated class ShortTermMemoryStore {
                 return immutableInteractiveMessages;
             }
             return [systemMessage, ...interactiveMessages];
-        } on fail sql:Error err {
+        } on fail error err {
             return error("Failed to retrieve chat messages: " + err.message(), err);
         }        
     }
@@ -310,7 +316,21 @@ public isolated class ShortTermMemoryStore {
     private isolated function removeCacheEntry(string key) {
         lock {
             if self.cache.hasKey(key) {
-                _ = self.cache.remove(key);
+                cache:Error? err = self.cache.invalidate(key);
+                if err is cache:Error {
+                    // Ignore, as this is for non-existent key
+                }
+            }
+        }
+    }
+
+    private isolated function getCacheEntry(string key) returns CachedMessages|Error {
+        lock {
+            do {
+                any cacheEntry = check self.cache.get(key);
+                return check cacheEntry.ensureType();
+            } on fail error err {
+                return error("Failed to retrieve cache entry: " + err.message(), err);
             }
         }
     }
