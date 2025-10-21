@@ -133,3 +133,8 @@ isolated function mapToMemoryChatInteractiveMessage(ai:ChatInteractiveMessage me
 
 isolated function getPromptContent(string|([string[], anydata[]] & readonly) content) returns string|(ai:Prompt & readonly) => 
     content is string ? content : createAIPrompt(content[0], content[1]);
+
+type DatabaseRecord record {|
+    string MessageJson;
+    json...;
+|};

@@ -19,8 +19,6 @@ import ballerina/cache;
 import ballerina/sql;
 import ballerinax/mssql;
 
-const OBJECT_EXISTS_ERROR_CODE = 2714;
-
 public type Error distinct ai:MemoryError;
 
 public type Configuration record {|
@@ -43,11 +41,12 @@ public isolated class ShortTermMemoryStore {
     *ai:ShortTermMemoryStore;
 
     private final mssql:Client dbClient;
-    private final cache:Cache cache = new ({capacity: 20});
-    // TODO
-    private final int maximumRecordCount;
+    private final cache:Cache cache;
+    private final int maxMessagesPerKey;
 
-    public isolated function init(mssql:Client|Configuration dbClient, int maximumRecordCount = 20) returns Error? {
+    public isolated function init(mssql:Client|Configuration dbClient, 
+                                  int maxMessagesPerKey = 20,
+                                  cache:CacheConfig cacheConfig = {capacity: 20}) returns Error? {
         if dbClient is mssql:Client {
             self.dbClient = dbClient;
         } else {
@@ -57,11 +56,12 @@ public isolated class ShortTermMemoryStore {
             }
             self.dbClient = initializedClient;
         }
-        self.maximumRecordCount = maximumRecordCount;
+        self.maxMessagesPerKey = maxMessagesPerKey;
+        self.cache = new (cacheConfig);
         return self.initializeDatabase();
     }
 
-    public isolated function getChatSystemMessage(string key) returns ai:ChatSystemMessage|ai:MemoryError? {
+    public isolated function getChatSystemMessage(string key) returns ai:ChatSystemMessage|Error? {
         lock {
             CachedMessages? cacheEntry = self.getCacheEntry(key);
             if cacheEntry is CachedMessages {
@@ -69,7 +69,7 @@ public isolated class ShortTermMemoryStore {
             }
         }
 
-        ChatSystemMessageDatabaseMessage|sql:Error systemMessage = self.dbClient->queryRow(`
+        DatabaseRecord|sql:Error systemMessage = self.dbClient->queryRow(`
             SELECT MessageJson 
             FROM ChatMessages 
             WHERE MessageKey = ${key} AND MessageRole = 'system'
@@ -79,16 +79,21 @@ public isolated class ShortTermMemoryStore {
             return ();
         }
 
-        if systemMessage is ChatSystemMessageDatabaseMessage {
-            // We intentionally don't populate the cache when just the system message is fetched
-            // to avoid having to load interactive messages, which are generally significantly more in number, as well.
-            return transformFromSystemMessageDatabaseMessage(systemMessage);
+        if systemMessage is sql:Error {
+            return error("Failed to retrieve system message: " + systemMessage.message(), systemMessage);
         }
-    
-        return error("Failed to retrieve system message: " + systemMessage.message(), systemMessage);
+
+        ChatSystemMessageDatabaseMessage|error dbMessage = systemMessage.MessageJson.fromJsonStringWithType();
+        if dbMessage is error {
+            return error("Failed to parse chat message from database: " + dbMessage.message(), dbMessage);
+        }
+
+        // We intentionally don't populate the cache when just the system message is fetched
+        // to avoid having to load interactive messages, which are generally significantly more in number, as well.
+        return transformFromSystemMessageDatabaseMessage(dbMessage);
     }
 
-    public isolated function getChatInteractiveMessages(string key) returns ai:ChatInteractiveMessage[]|ai:MemoryError {
+    public isolated function getChatInteractiveMessages(string key) returns ai:ChatInteractiveMessage[]|Error {
         lock {
             CachedMessages? cacheEntry = self.getCacheEntry(key);
             if cacheEntry is CachedMessages {
@@ -109,7 +114,7 @@ public isolated class ShortTermMemoryStore {
     }
 
     public isolated function getAll(string key) 
-            returns [ai:ChatSystemMessage, ai:ChatInteractiveMessage...]|ai:ChatInteractiveMessage[]|ai:MemoryError {
+            returns [ai:ChatSystemMessage, ai:ChatInteractiveMessage...]|ai:ChatInteractiveMessage[]|Error {
         lock {
             CachedMessages? cacheEntry = self.getCacheEntry(key);
             if cacheEntry is CachedMessages {
@@ -129,12 +134,12 @@ public isolated class ShortTermMemoryStore {
         }
     }
 
-    public isolated function isFull(string key) returns boolean {
-        // TODO
-        return false;
+    public isolated function isFull(string key) returns boolean|Error {
+        ai:ChatInteractiveMessage[] interactiveMessages = check self.getChatInteractiveMessages(key);
+        return interactiveMessages.length() == self.maxMessagesPerKey;
     }
 
-    public isolated function put(string key, ai:ChatMessage message) returns ai:MemoryError? {
+    public isolated function put(string key, ai:ChatMessage message) returns Error? {
         ChatMessageDatabaseMessage dbMessage = transformToDatabaseMessage(message);
 
         if dbMessage is ChatSystemMessageDatabaseMessage {
@@ -150,6 +155,13 @@ public isolated class ShortTermMemoryStore {
                 return error("Failed to upsert system message: " + upsertResult.message(), upsertResult);
             }
         } else {
+            // Expected to be checked by the caller, but doing an additional check here, without locking.
+            ai:ChatInteractiveMessage[] chatInteractiveMessages = check self.getChatInteractiveMessages(key);
+            if chatInteractiveMessages.length() >= self.maxMessagesPerKey {
+                return error(string `Cannot add more messages. Maximum limit of '${
+                    self.maxMessagesPerKey}' reached for key: '${key}'`);
+            }
+
             sql:ExecutionResult|sql:Error result = self.dbClient->execute(`
                 INSERT INTO ChatMessages (MessageKey, MessageRole, MessageJson) 
                 VALUES (${key}, ${dbMessage.role}, ${dbMessage.toJsonString()})`);
@@ -181,7 +193,7 @@ public isolated class ShortTermMemoryStore {
         }
     }
 
-    public isolated function removeChatSystemMessage(string key) returns ai:MemoryError? {
+    public isolated function removeChatSystemMessage(string key) returns Error? {
         sql:ExecutionResult|sql:Error deleteResult = self.dbClient->execute(`
                 DELETE FROM ChatMessages 
                 WHERE MessageKey = ${key} AND MessageRole = 'system'`);
@@ -200,7 +212,7 @@ public isolated class ShortTermMemoryStore {
         }
     }
 
-    public isolated function removeChatInteractiveMessages(string key, int? count = ()) returns ai:MemoryError? {
+    public isolated function removeChatInteractiveMessages(string key, int? count = ()) returns Error? {
         if count is () {
             sql:ExecutionResult|sql:Error result = self.dbClient->execute(`
                 DELETE FROM ChatMessages 
@@ -209,7 +221,6 @@ public isolated class ShortTermMemoryStore {
                 self.removeCacheEntry(key);
                 return error("Failed to delete chat messages: " + result.message(), result);
             }
-            return;
         } else {
             sql:ExecutionResult|sql:Error result = self.dbClient->execute(`
                 DELETE FROM ChatMessages 
@@ -240,7 +251,7 @@ public isolated class ShortTermMemoryStore {
         }
     }
 
-    public isolated function removeAll(string key) returns ai:MemoryError? {
+    public isolated function removeAll(string key) returns Error? {
         sql:ExecutionResult|sql:Error result = self.dbClient->execute(`
                 DELETE FROM ChatMessages 
                 WHERE MessageKey = ${key}`);
@@ -279,7 +290,7 @@ public isolated class ShortTermMemoryStore {
 
     private isolated function cacheFromDatabase(string key) 
             returns readonly & ([ai:ChatSystemMessage,  ai:ChatInteractiveMessage...]|ai:ChatInteractiveMessage[])|Error {
-        stream<ChatMessageDatabaseMessage , sql:Error?> messages = self.dbClient->query(`
+        stream<DatabaseRecord, sql:Error?> messages = self.dbClient->query(`
             SELECT MessageJson 
             FROM ChatMessages 
             WHERE MessageKey = ${key}
@@ -288,8 +299,13 @@ public isolated class ShortTermMemoryStore {
             (ai:ChatSystemMessage & readonly)? systemMessage = ();
             (ai:ChatInteractiveMessage & readonly)[] interactiveMessages = [];
 
-            check from ChatMessageDatabaseMessage dbMessage in messages
+            check from DatabaseRecord {MessageJson} in messages
             do {
+                ChatMessageDatabaseMessage|error dbMessage = MessageJson.fromJsonStringWithType();
+                if dbMessage is error {
+                    return error("Failed to parse chat message from database: " + dbMessage.message(), dbMessage);
+                }
+
                 if dbMessage is ChatSystemMessageDatabaseMessage {
                     systemMessage = transformFromSystemMessageDatabaseMessage(dbMessage);
                 } else {
@@ -302,7 +318,7 @@ public isolated class ShortTermMemoryStore {
             lock {
                 if !self.cache.hasKey(key) {
                     check self.cache.put(
-                        key, {systemMessage, interactiveMessages: [...immutableInteractiveMessages]});
+                        key, <CachedMessages> {systemMessage, interactiveMessages: [...immutableInteractiveMessages]});
                 }
             }
 
