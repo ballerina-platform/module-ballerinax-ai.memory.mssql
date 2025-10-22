@@ -21,22 +21,22 @@ type Prompt record {|
     anydata[] insertions;
 |};
 
-public type ChatUserMessageDatabaseMessage record {|
+type ChatUserMessageDatabaseMessage record {|
     ai:USER role;
     string|Prompt content;
     string name?;
 |};
 
-public type ChatSystemMessageDatabaseMessage record {|
+type ChatSystemMessageDatabaseMessage record {|
     ai:SYSTEM role;
     string|Prompt content;
     string name?;
 |};
 
-public type ChatMessageDatabaseMessage 
+type ChatMessageDatabaseMessage 
     ChatUserMessageDatabaseMessage|ChatSystemMessageDatabaseMessage|ai:ChatAssistantMessage|ai:ChatFunctionMessage;
 
-public type ChatInteractiveMessageDatabaseMessage 
+type ChatInteractiveMessageDatabaseMessage 
     ChatUserMessageDatabaseMessage|ai:ChatAssistantMessage|ai:ChatFunctionMessage;
 
 isolated function transformToDatabaseMessage(ai:ChatMessage message) returns ChatMessageDatabaseMessage {

@@ -20,16 +20,26 @@ import ballerina/sql;
 import ballerinax/mssql;
 import ballerinax/mssql.driver as _;
 
+# Represents a distinct error type for memory store errors.
 public type Error distinct ai:MemoryError;
 
-public type Configuration record {|
+# Database configuration for MS SQL client.
+public type DatabaseConfiguration record {|
+    # Database host
     string host = "localhost";
+    # Database user
     string user = "sa";
+    # Database password
     string password?;
+    # Database name
     string database;
+    # Database port
     int port = 1433;
+    # Instance name
     string instance?;
+    # Additional options for the MS SQL client
     mssql:Options options?;
+    # Connection pool configuration
     sql:ConnectionPool connectionPool?;
 |};
 
@@ -38,6 +48,7 @@ type CachedMessages record {|
     (readonly & ai:ChatInteractiveMessage)[] interactiveMessages;
 |};
 
+# Represents an MS SQL-backed short-term memory store for messages.
 public isolated class ShortTermMemoryStore {
     *ai:ShortTermMemoryStore;
 
@@ -45,13 +56,19 @@ public isolated class ShortTermMemoryStore {
     private final cache:Cache cache;
     private final int maxMessagesPerKey;
 
-    public isolated function init(mssql:Client|Configuration dbClient, 
+    # Initializes the MS SQL-backed short-term memory store.
+    # 
+    # + mssqlClient - The MS SQL client or database configuration to connect to the database
+    # + maxMessagesPerKey - The maximum number of interactive messages to store per key
+    # + cacheConfig - The cache configuration for in-memory caching of messages
+    # + returns - An error if the initialization fails
+    public isolated function init(mssql:Client|DatabaseConfiguration mssqlClient, 
                                   int maxMessagesPerKey = 20,
                                   cache:CacheConfig cacheConfig = {capacity: 20}) returns Error? {
-        if dbClient is mssql:Client {
-            self.dbClient = dbClient;
+        if mssqlClient is mssql:Client {
+            self.dbClient = mssqlClient;
         } else {
-            mssql:Client|sql:Error initializedClient = new mssql:Client(...dbClient);
+            mssql:Client|sql:Error initializedClient = new mssql:Client(...mssqlClient);
             if initializedClient is sql:Error {
                 return error("Failed to create MSSQL client: " + initializedClient.message(), initializedClient);
             }
@@ -62,6 +79,11 @@ public isolated class ShortTermMemoryStore {
         return self.initializeDatabase();
     }
 
+    # Retrieves the system message, if it was provided, for a given key.
+    # 
+    # + key - The key associated with the memory
+    # + return - A copy of the message if it was specified, nil if it was not, or an 
+    # `Error` error if the operation fails
     public isolated function getChatSystemMessage(string key) returns ai:ChatSystemMessage|Error? {
         lock {
             CachedMessages? cacheEntry = self.getCacheEntry(key);
@@ -94,6 +116,11 @@ public isolated class ShortTermMemoryStore {
         return transformFromSystemMessageDatabaseMessage(dbMessage);
     }
 
+    # Retrieves all stored interactive chat messages (i.e., all chat messages except the system
+    # message) for a given key.
+    # 
+    # + key - The key associated with the memory
+    # + return - A copy of the messages, or an `Error` error if the operation fails
     public isolated function getChatInteractiveMessages(string key) returns ai:ChatInteractiveMessage[]|Error {
         lock {
             CachedMessages? cacheEntry = self.getCacheEntry(key);
@@ -114,6 +141,10 @@ public isolated class ShortTermMemoryStore {
         }
     }
 
+    # Retrieves all stored chat messages for a given key.
+    # 
+    # + key - The key associated with the memory
+    # + return - A copy of the messages, or an `Error` error if the operation fails
     public isolated function getAll(string key) 
             returns [ai:ChatSystemMessage, ai:ChatInteractiveMessage...]|ai:ChatInteractiveMessage[]|Error {
         lock {
@@ -135,11 +166,11 @@ public isolated class ShortTermMemoryStore {
         }
     }
 
-    public isolated function isFull(string key) returns boolean|Error {
-        ai:ChatInteractiveMessage[] interactiveMessages = check self.getChatInteractiveMessages(key);
-        return interactiveMessages.length() == self.maxMessagesPerKey;
-    }
-
+    # Adds a chat message to the memory store for a given key.
+    # 
+    # + key - The key associated with the memory
+    # + message - The `ChatMessage` message to store
+    # + return - nil on success, or an `Error` if the operation fails
     public isolated function put(string key, ai:ChatMessage message) returns Error? {
         ChatMessageDatabaseMessage dbMessage = transformToDatabaseMessage(message);
 
@@ -194,6 +225,11 @@ public isolated class ShortTermMemoryStore {
         }
     }
 
+    # Removes the system chat message, if specified, for a given key.
+    # 
+    # + key - The key associated with the memory
+    # + return - nil on success or if there is no system chat message against the key, 
+    #       or an `Error` error if the operation fails
     public isolated function removeChatSystemMessage(string key) returns Error? {
         sql:ExecutionResult|sql:Error deleteResult = self.dbClient->execute(`
                 DELETE FROM ChatMessages 
@@ -213,6 +249,13 @@ public isolated class ShortTermMemoryStore {
         }
     }
 
+    # Removes all stored interactive chat messages (i.e., all chat messages except the system
+    # message) for a given key.
+    # 
+    # + key - The key associated with the memory
+    # + count - Optional number of messages to remove, starting from the first interactive message in; 
+    #               if not provided, removes all messages
+    # + return - nil on success, or an `Error` error if the operation fails
     public isolated function removeChatInteractiveMessages(string key, int? count = ()) returns Error? {
         if count is () {
             sql:ExecutionResult|sql:Error result = self.dbClient->execute(`
@@ -252,6 +295,10 @@ public isolated class ShortTermMemoryStore {
         }
     }
 
+    # Removes all stored chat messages for a given key.
+    # 
+    # + key - The key associated with the memory
+    # + return - nil on success, or an `Error` error if the operation fails
     public isolated function removeAll(string key) returns Error? {
         sql:ExecutionResult|sql:Error result = self.dbClient->execute(`
                 DELETE FROM ChatMessages 
@@ -261,6 +308,15 @@ public isolated class ShortTermMemoryStore {
             return error("Failed to delete chat messages: " + result.message(), result);
         }
         self.removeCacheEntry(key);
+    }
+
+    # Checks if the memory store is full for a given key.
+    # 
+    # + key - The key associated with the memory
+    # + return - true if the memory store is full, false otherwise, or an `Error` error if the operation fails
+    public isolated function isFull(string key) returns boolean|Error {
+        ai:ChatInteractiveMessage[] interactiveMessages = check self.getChatInteractiveMessages(key);
+        return interactiveMessages.length() == self.maxMessagesPerKey;
     }
 
     private isolated function initializeDatabase() returns Error? {
