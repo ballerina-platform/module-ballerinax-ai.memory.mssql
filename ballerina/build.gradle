@@ -73,6 +73,68 @@ task commitTomlFiles {
     }
 }
 
+tasks.register('startMSSQLServer') {
+    doLast {
+        def stdOut = new ByteArrayOutputStream()
+        def cmd = Os.isFamily(Os.FAMILY_WINDOWS) ? ['cmd', '/c'] : ['sh', '-c']
+        exec {
+            commandLine cmd + ["docker compose -f tests/resources/compose.yaml ps --services --filter status=running"]
+            standardOutput = stdOut
+        }
+        if (stdOut.toString().trim().isEmpty()) {
+            println "Starting the MS SQL container"
+            exec {
+                commandLine cmd + ["docker compose -f tests/resources/compose.yaml up -d"]
+            }
+            
+            def healthCheckPassed = false
+            int retries = 18
+            for (int i = 0; i < retries; i++) {
+                def healthOut = new ByteArrayOutputStream()
+                exec {
+                    commandLine cmd + ["docker compose -f tests/resources/compose.yaml ps --format '{{.Name}}: {{.Health}}'"]
+                    standardOutput = healthOut
+                    ignoreExitValue = true
+                }
+                def healthStatus = healthOut.toString().trim()
+                if (healthStatus && !healthStatus.contains("unhealthy") && !healthStatus.contains("starting")) {
+                    healthCheckPassed = true
+                    break
+                }
+                sleep(5 * 1000)
+            }
+            if (!healthCheckPassed) {
+                throw new GradleException("The MS SQL container did not become healthy in time.")
+            }
+            println "The MS SQL container is healthy."
+        } else {
+            println "Expected MS SQL container is already running, not starting new containers."
+        }
+    }
+}
+
+tasks.register('stopMSSQLServer') {
+    doLast {
+        def stdOut = new ByteArrayOutputStream()
+        def cmd = Os.isFamily(Os.FAMILY_WINDOWS) ? ['cmd', '/c'] : ['sh', '-c']
+        exec {
+            commandLine cmd + ["docker compose -f tests/resources/compose.yaml ps --services --filter status=running"]
+            standardOutput = stdOut
+        }
+        if (!stdOut.toString().trim().isEmpty()) {
+            println "Stopping the MS SQL container"
+            exec {
+                commandLine cmd + ["docker compose -f tests/resources/compose.yaml rm -svf"]
+                standardOutput = stdOut
+            }
+            println stdOut.toString()
+            sleep(10 * 1000)
+        } else {
+            println "The MS SQL server is not started."
+        }
+    }
+}
+
 publishing {
     publications {
         maven(MavenPublication) {
@@ -98,3 +160,5 @@ clean {
 build.dependsOn "generatePomFileForMavenPublication"
 publishToMavenLocal.dependsOn build
 publish.dependsOn build
+test.dependsOn "startMSSQLServer"
+test.finalizedBy "stopMSSQLServer"
