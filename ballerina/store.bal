@@ -18,6 +18,7 @@ import ballerina/ai;
 import ballerina/cache;
 import ballerina/sql;
 import ballerinax/mssql;
+import ballerinax/mssql.driver as _;
 
 public type Error distinct ai:MemoryError;
 

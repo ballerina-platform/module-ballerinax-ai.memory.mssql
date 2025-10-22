@@ -15,10 +15,9 @@
 // under the License.
 
 import ballerina/ai;
+import ballerina/sql;
 import ballerina/test;
 import ballerinax/mssql;
-import ballerinax/mssql.driver as _;
-import ballerina/sql;
 
 const string K1 = "key1";
 const string K2 = "key2";
@@ -33,9 +32,23 @@ final readonly & ai:ChatAssistantMessage K1M4 = {role: ai:ASSISTANT,
 
 const ai:ChatUserMessage K2M1 = {role: ai:USER, content: "Hello, my name is Bob."};
 
-final mssql:Client cl = check new (database = "message_db", password = "MySecretPW@123");
+isolated mssql:Client? modCl = ();
+
+@test:BeforeSuite
+function initClient() returns error? {
+    lock {
+        modCl = check new (database = "message_db", password = "Test-1234#");
+    }
+}
+
+function getClient() returns mssql:Client {
+    lock {
+        return <mssql:Client>modCl;
+    }
+}
 
 function dropTable() returns error? {
+    mssql:Client cl = getClient();
     int tableExists = check cl->queryRow(
         `SELECT IIF(OBJECT_ID('dbo.ChatMessages', 'U') IS NOT NULL, 1, 0) AS TableExists;`);
 
@@ -48,6 +61,7 @@ function dropTable() returns error? {
     before: dropTable
 }
 function testBasicStore() returns error? {
+    mssql:Client cl = getClient();
     ShortTermMemoryStore store = check new (cl);
 
     check store.put(K1, K1SM1);
@@ -55,17 +69,17 @@ function testBasicStore() returns error? {
     check store.put(K1, k1m2);
     check store.put(K2, K2M1);
 
-    check assertFromDatabase(K1, [K1SM1], SYSTEM);
-    check assertFromDatabase(K1, [K1M1, k1m2], INTERACTIVE);
-    check assertFromDatabase(K1, [K1SM1, K1M1, k1m2]);
+    check assertFromDatabase(cl, K1, [K1SM1], SYSTEM);
+    check assertFromDatabase(cl, K1, [K1M1, k1m2], INTERACTIVE);
+    check assertFromDatabase(cl, K1, [K1SM1, K1M1, k1m2]);
 
     check assertAllMessages(store, K1, [K1SM1, K1M1, k1m2]);
     check assertSystemMessage(store, K1, K1SM1);
     check assertInteractiveMessages(store, K1, [K1M1, k1m2]);
 
-    check assertFromDatabase(K2, [], SYSTEM);
-    check assertFromDatabase(K2, [K2M1], INTERACTIVE);
-    check assertFromDatabase(K2, [K2M1]);
+    check assertFromDatabase(cl, K2, [], SYSTEM);
+    check assertFromDatabase(cl, K2, [K2M1], INTERACTIVE);
+    check assertFromDatabase(cl, K2, [K2M1]);
 
     check assertAllMessages(store, K2, [K2M1]);
     check assertSystemMessage(store, K2, ());
@@ -73,17 +87,17 @@ function testBasicStore() returns error? {
 
     check store.removeAll(K1);
 
-    check assertFromDatabase(K1, [], SYSTEM);
-    check assertFromDatabase(K1, [], INTERACTIVE);
-    check assertFromDatabase(K1, []);
+    check assertFromDatabase(cl, K1, [], SYSTEM);
+    check assertFromDatabase(cl, K1, [], INTERACTIVE);
+    check assertFromDatabase(cl, K1, []);
 
     check assertAllMessages(store, K1, []);
     check assertSystemMessage(store, K1, ());
     check assertInteractiveMessages(store, K1, []);
 
-    check assertFromDatabase(K2, [], SYSTEM);
-    check assertFromDatabase(K2, [K2M1], INTERACTIVE);
-    check assertFromDatabase(K2, [K2M1]);
+    check assertFromDatabase(cl, K2, [], SYSTEM);
+    check assertFromDatabase(cl, K2, [K2M1], INTERACTIVE);
+    check assertFromDatabase(cl, K2, [K2M1]);
 
     check assertAllMessages(store, K2, [K2M1]);
     check assertSystemMessage(store, K2, ());
@@ -92,9 +106,9 @@ function testBasicStore() returns error? {
     // Add more messages to K1 after deletion.
     check store.put(K1, K1M3);
 
-    check assertFromDatabase(K1, [], SYSTEM);
-    check assertFromDatabase(K1, [K1M3], INTERACTIVE);
-    check assertFromDatabase(K1, [K1M3]);
+    check assertFromDatabase(cl, K1, [], SYSTEM);
+    check assertFromDatabase(cl, K1, [K1M3], INTERACTIVE);
+    check assertFromDatabase(cl, K1, [K1M3]);
     
     check assertAllMessages(store, K1, [K1M3]);
     check assertSystemMessage(store, K1, ());
@@ -105,6 +119,7 @@ function testBasicStore() returns error? {
     before: dropTable
 }
 function testRemoveSystemMessage() returns error? {
+    mssql:Client cl = getClient();
     ShortTermMemoryStore store = check new (cl);
 
     check store.put(K1, K1SM1);
@@ -114,17 +129,17 @@ function testRemoveSystemMessage() returns error? {
 
     check store.removeChatSystemMessage(K1);
 
-    check assertFromDatabase(K1, [], SYSTEM);
-    check assertFromDatabase(K1, [K1M1, k1m2], INTERACTIVE);
-    check assertFromDatabase(K1, [K1M1, k1m2]);
+    check assertFromDatabase(cl, K1, [], SYSTEM);
+    check assertFromDatabase(cl, K1, [K1M1, k1m2], INTERACTIVE);
+    check assertFromDatabase(cl, K1, [K1M1, k1m2]);
 
     check assertAllMessages(store, K1, [K1M1, k1m2]);
     check assertSystemMessage(store, K1, ());
     check assertInteractiveMessages(store, K1, [K1M1, k1m2]);
 
-    check assertFromDatabase(K2, [], SYSTEM);
-    check assertFromDatabase(K2, [K2M1], INTERACTIVE);
-    check assertFromDatabase(K2, [K2M1]);
+    check assertFromDatabase(cl, K2, [], SYSTEM);
+    check assertFromDatabase(cl, K2, [K2M1], INTERACTIVE);
+    check assertFromDatabase(cl, K2, [K2M1]);
 
     check assertAllMessages(store, K2, [K2M1]);
     check assertSystemMessage(store, K2, ());
@@ -132,9 +147,9 @@ function testRemoveSystemMessage() returns error? {
 
     check store.removeChatSystemMessage(K2);
 
-    check assertFromDatabase(K2, [], SYSTEM);
-    check assertFromDatabase(K2, [K2M1], INTERACTIVE);
-    check assertFromDatabase(K2, [K2M1]);
+    check assertFromDatabase(cl, K2, [], SYSTEM);
+    check assertFromDatabase(cl, K2, [K2M1], INTERACTIVE);
+    check assertFromDatabase(cl, K2, [K2M1]);
 
     check assertAllMessages(store, K2, [K2M1]);
     check assertSystemMessage(store, K2, ());
@@ -145,6 +160,7 @@ function testRemoveSystemMessage() returns error? {
     before: dropTable
 }
 function testRemoveInteractiveMessages() returns error? {
+    mssql:Client cl = getClient();
     ShortTermMemoryStore store = check new (cl);
 
     check store.put(K1, K1SM1);
@@ -154,17 +170,17 @@ function testRemoveInteractiveMessages() returns error? {
 
     check store.removeChatInteractiveMessages(K1);
 
-    check assertFromDatabase(K1, [K1SM1], SYSTEM);
-    check assertFromDatabase(K1, [], INTERACTIVE);
-    check assertFromDatabase(K1, [K1SM1]);
+    check assertFromDatabase(cl, K1, [K1SM1], SYSTEM);
+    check assertFromDatabase(cl, K1, [], INTERACTIVE);
+    check assertFromDatabase(cl, K1, [K1SM1]);
 
     check assertAllMessages(store, K1, [K1SM1]);
     check assertSystemMessage(store, K1, K1SM1);
     check assertInteractiveMessages(store, K1, []);
 
-    check assertFromDatabase(K2, [], SYSTEM);
-    check assertFromDatabase(K2, [K2M1], INTERACTIVE);
-    check assertFromDatabase(K2, [K2M1]);
+    check assertFromDatabase(cl, K2, [], SYSTEM);
+    check assertFromDatabase(cl, K2, [K2M1], INTERACTIVE);
+    check assertFromDatabase(cl, K2, [K2M1]);
 
     check assertAllMessages(store, K2, [K2M1]);
     check assertSystemMessage(store, K2, ());
@@ -172,17 +188,17 @@ function testRemoveInteractiveMessages() returns error? {
 
     check store.removeChatInteractiveMessages(K2);
 
-    check assertFromDatabase(K1, [K1SM1], SYSTEM);
-    check assertFromDatabase(K1, [], INTERACTIVE);
-    check assertFromDatabase(K1, [K1SM1]);
+    check assertFromDatabase(cl, K1, [K1SM1], SYSTEM);
+    check assertFromDatabase(cl, K1, [], INTERACTIVE);
+    check assertFromDatabase(cl, K1, [K1SM1]);
 
     check assertAllMessages(store, K1, [K1SM1]);
     check assertSystemMessage(store, K1, K1SM1);
     check assertInteractiveMessages(store, K1, []);
 
-    check assertFromDatabase(K2, [], SYSTEM);
-    check assertFromDatabase(K2, [], INTERACTIVE);
-    check assertFromDatabase(K2, []);
+    check assertFromDatabase(cl, K2, [], SYSTEM);
+    check assertFromDatabase(cl, K2, [], INTERACTIVE);
+    check assertFromDatabase(cl, K2, []);
 
     check assertAllMessages(store, K2, []);
     check assertSystemMessage(store, K2, ());
@@ -193,6 +209,7 @@ function testRemoveInteractiveMessages() returns error? {
     before: dropTable
 }
 function testRemoveAllMessages() returns error? {
+    mssql:Client cl = getClient();
     ShortTermMemoryStore store = check new (cl);
 
     check store.put(K1, K1SM1);
@@ -202,17 +219,17 @@ function testRemoveAllMessages() returns error? {
 
     check store.removeAll(K1);
 
-    check assertFromDatabase(K1, [], SYSTEM);
-    check assertFromDatabase(K1, [], INTERACTIVE);
-    check assertFromDatabase(K1, []);
+    check assertFromDatabase(cl, K1, [], SYSTEM);
+    check assertFromDatabase(cl, K1, [], INTERACTIVE);
+    check assertFromDatabase(cl, K1, []);
 
     check assertAllMessages(store, K1, []);
     check assertSystemMessage(store, K1, ());
     check assertInteractiveMessages(store, K1, []);
 
-    check assertFromDatabase(K2, [], SYSTEM);
-    check assertFromDatabase(K2, [K2M1], INTERACTIVE);
-    check assertFromDatabase(K2, [K2M1]);
+    check assertFromDatabase(cl, K2, [], SYSTEM);
+    check assertFromDatabase(cl, K2, [K2M1], INTERACTIVE);
+    check assertFromDatabase(cl, K2, [K2M1]);
 
     check assertAllMessages(store, K2, [K2M1]);
     check assertSystemMessage(store, K2, ());
@@ -220,17 +237,17 @@ function testRemoveAllMessages() returns error? {
 
     check store.removeAll(K2);
 
-    check assertFromDatabase(K1, [], SYSTEM);
-    check assertFromDatabase(K1, [], INTERACTIVE);
-    check assertFromDatabase(K1, []);
+    check assertFromDatabase(cl, K1, [], SYSTEM);
+    check assertFromDatabase(cl, K1, [], INTERACTIVE);
+    check assertFromDatabase(cl, K1, []);
 
     check assertAllMessages(store, K1, []);
     check assertSystemMessage(store, K1, ());
     check assertInteractiveMessages(store, K1, []);
 
-    check assertFromDatabase(K2, [], SYSTEM);
-    check assertFromDatabase(K2, [], INTERACTIVE);
-    check assertFromDatabase(K2, []);
+    check assertFromDatabase(cl, K2, [], SYSTEM);
+    check assertFromDatabase(cl, K2, [], INTERACTIVE);
+    check assertFromDatabase(cl, K2, []);
 
     check assertAllMessages(store, K2, []);
     check assertSystemMessage(store, K2, ());
@@ -241,6 +258,7 @@ function testRemoveAllMessages() returns error? {
     before: dropTable
 }
 function testRemovingSubsetOfInteractiveMessages() returns error? {
+    mssql:Client cl = getClient();
     ShortTermMemoryStore store = check new (cl);
     
     check store.put(K1, K1SM1);
@@ -251,9 +269,9 @@ function testRemovingSubsetOfInteractiveMessages() returns error? {
 
     check store.removeChatInteractiveMessages(K1, 2);
 
-    check assertFromDatabase(K1, [K1SM1], SYSTEM);
-    check assertFromDatabase(K1, [K1M3, K1M4], INTERACTIVE);
-    check assertFromDatabase(K1, [K1SM1, K1M3, K1M4]);
+    check assertFromDatabase(cl, K1, [K1SM1], SYSTEM);
+    check assertFromDatabase(cl, K1, [K1M3, K1M4], INTERACTIVE);
+    check assertFromDatabase(cl, K1, [K1SM1, K1M3, K1M4]);
 
     check assertSystemMessage(store, K1, K1SM1);
     check assertInteractiveMessages(store, K1, [K1M3, K1M4]);
@@ -264,6 +282,7 @@ function testRemovingSubsetOfInteractiveMessages() returns error? {
     before: dropTable
 }
 function testSystemMessageOverwrite() returns error? {
+    mssql:Client cl = getClient();
     ShortTermMemoryStore store = check new (cl);
 
     check store.put(K1, K1SM1);
@@ -274,9 +293,9 @@ function testSystemMessageOverwrite() returns error? {
     check assertInteractiveMessages(store, K1, [K1M1, k1m2]);
     check assertAllMessages(store, K1, [K1SM1, K1M1, k1m2]);
 
-    check assertFromDatabase(K1, [K1SM1], SYSTEM);
-    check assertFromDatabase(K1, [K1M1, k1m2], INTERACTIVE);
-    check assertFromDatabase(K1, [K1SM1, K1M1, k1m2]);
+    check assertFromDatabase(cl, K1, [K1SM1], SYSTEM);
+    check assertFromDatabase(cl, K1, [K1M1, k1m2], INTERACTIVE);
+    check assertFromDatabase(cl, K1, [K1SM1, K1M1, k1m2]);
 
     final readonly & ai:ChatSystemMessage k1sm2 = {
         role: ai:SYSTEM, 
@@ -288,15 +307,16 @@ function testSystemMessageOverwrite() returns error? {
     check assertInteractiveMessages(store, K1, [K1M1, k1m2]);
     check assertAllMessages(store, K1, [k1sm2, K1M1, k1m2]);
 
-    check assertFromDatabase(K1, [k1sm2], SYSTEM);
-    check assertFromDatabase(K1, [K1M1, k1m2], INTERACTIVE);
-    check assertFromDatabase(K1, [k1sm2, K1M1, k1m2]);
+    check assertFromDatabase(cl, K1, [k1sm2], SYSTEM);
+    check assertFromDatabase(cl, K1, [K1M1, k1m2], INTERACTIVE);
+    check assertFromDatabase(cl, K1, [k1sm2, K1M1, k1m2]);
 }
 
 @test:Config {
     before: dropTable
 }
 function testPutWithDifferentMessageKinds() returns error? {
+    mssql:Client cl = getClient();
     ShortTermMemoryStore store = check new (cl);
 
     final readonly & ai:ChatFunctionMessage funcMessage = {
@@ -310,9 +330,9 @@ function testPutWithDifferentMessageKinds() returns error? {
     check store.put(K1, k1m2);
     check store.put(K1, funcMessage);
 
-    check assertFromDatabase(K1, [K1SM1], SYSTEM);
-    check assertFromDatabase(K1, [K1M1, k1m2, funcMessage], INTERACTIVE);
-    check assertFromDatabase(K1, [K1SM1, K1M1, k1m2, funcMessage]);
+    check assertFromDatabase(cl, K1, [K1SM1], SYSTEM);
+    check assertFromDatabase(cl, K1, [K1M1, k1m2, funcMessage], INTERACTIVE);
+    check assertFromDatabase(cl, K1, [K1SM1, K1M1, k1m2, funcMessage]);
 
     check assertSystemMessage(store, K1, K1SM1);
     check assertInteractiveMessages(store, K1, [K1M1, k1m2, funcMessage]);
@@ -323,6 +343,7 @@ function testPutWithDifferentMessageKinds() returns error? {
     before: dropTable
 }
 function testFillingUp() returns error? {
+    mssql:Client cl = getClient();
     ShortTermMemoryStore store = check new (cl, 3);
 
     check store.put(K1, K1SM1);
@@ -378,7 +399,7 @@ enum MessageType {
     ALL
 }
 
-function assertFromDatabase(string key, ai:ChatMessage[] expected, MessageType messageType = ALL) returns error? {
+function assertFromDatabase(mssql:Client cl, string key, ai:ChatMessage[] expected, MessageType messageType = ALL) returns error? {
     sql:ParameterizedQuery[] selectQuery = [`SELECT MessageJson FROM ChatMessages WHERE MessageKey = ${key}`];
     if messageType == SYSTEM {
         selectQuery.push(` AND MessageRole = 'system'` );
