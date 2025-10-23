@@ -23,6 +23,8 @@ import ballerinax/mssql.driver as _;
 # Represents a distinct error type for memory store errors.
 public type Error distinct ai:MemoryError;
 
+type ExceedsSizeError distinct Error;
+
 # Database configuration for MS SQL client.
 public type DatabaseConfiguration record {|
     # Database host
@@ -187,18 +189,24 @@ public isolated class ShortTermMemoryStore {
                 return error("Failed to upsert system message: " + upsertResult.message(), upsertResult);
             }
         } else {
-            // Expected to be checked by the caller, but doing an additional check here, without locking.
-            ai:ChatInteractiveMessage[] chatInteractiveMessages = check self.getChatInteractiveMessages(key);
-            if chatInteractiveMessages.length() >= self.maxMessagesPerKey {
-                return error(string `Cannot add more messages. Maximum limit of '${
-                    self.maxMessagesPerKey}' reached for key: '${key}'`);
-            }
+            do {
+                // Expected to be checked by the caller, but doing an additional check here, without locking.
+                ai:ChatInteractiveMessage[]|Error chatInteractiveMessages = self.getChatInteractiveMessages(key);
+                if chatInteractiveMessages is Error {
+                    error? cause = chatInteractiveMessages.cause();
+                    fail cause is error ? cause : chatInteractiveMessages;
+                }
 
-            sql:ExecutionResult|sql:Error result = self.dbClient->execute(`
-                INSERT INTO ChatMessages (MessageKey, MessageRole, MessageJson) 
-                VALUES (${key}, ${dbMessage.role}, ${dbMessage.toJsonString()})`);
-            if result is sql:Error {
-                return error("Failed to insert chat message: " + result.message(), result);
+                if chatInteractiveMessages.length() >= self.maxMessagesPerKey {
+                    return error(string `Cannot add more messages. Maximum limit of '${
+                        self.maxMessagesPerKey}' reached for key: '${key}'`);
+                }
+
+                _ = check self.dbClient->execute(`
+                    INSERT INTO ChatMessages (MessageKey, MessageRole, MessageJson) 
+                    VALUES (${key}, ${dbMessage.role}, ${dbMessage.toJsonString()})`);
+            } on fail error err {
+                return error("Failed to add chat message: " + err.message(), err);
             }
         }
 
@@ -306,7 +314,16 @@ public isolated class ShortTermMemoryStore {
     # + key - The key associated with the memory
     # + return - true if the memory store is full, false otherwise, or an `Error` error if the operation fails
     public isolated function isFull(string key) returns boolean|Error {
-        ai:ChatInteractiveMessage[] interactiveMessages = check self.getChatInteractiveMessages(key);
+        ai:ChatInteractiveMessage[]|Error interactiveMessages = self.getChatInteractiveMessages(key);
+
+        if interactiveMessages is Error {
+            error? cause = interactiveMessages.cause();
+            if cause is ExceedsSizeError {
+                return true;
+            }
+            return interactiveMessages;
+        }
+
         return interactiveMessages.length() >= self.maxMessagesPerKey;
     }
 
@@ -338,12 +355,27 @@ public isolated class ShortTermMemoryStore {
 
     private isolated function cacheFromDatabase(string key) 
             returns readonly & ([ai:ChatSystemMessage,  ai:ChatInteractiveMessage...]|ai:ChatInteractiveMessage[])|Error {
-        stream<DatabaseRecord, sql:Error?> messages = self.dbClient->query(`
-            SELECT MessageJson 
+        int|sql:Error messageCount = self.dbClient->queryRow(`
+            SELECT COUNT(*) as count 
             FROM ChatMessages 
-            WHERE MessageKey = ${key}
-            ORDER BY CreatedAt ASC`);
+            WHERE MessageKey = ${key} AND MessageRole != 'system'`);
+
+        if messageCount is sql:Error {
+            return error("Failed to load message count from the database: " + messageCount.message(), messageCount);
+        }
+
+
+        if messageCount > self.maxMessagesPerKey {
+            return error ExceedsSizeError(string `Cannot load messages from the database: Message count '${
+                messageCount}' exceeds maximum limit of '${self.maxMessagesPerKey}' for key: '${key}'`);
+        }
+
         do {
+            stream<DatabaseRecord, sql:Error?> messages = self.dbClient->query(`
+                SELECT MessageJson 
+                FROM ChatMessages 
+                WHERE MessageKey = ${key}
+                ORDER BY CreatedAt ASC`);
             (ai:ChatSystemMessage & readonly)? systemMessage = ();
             (ai:ChatInteractiveMessage & readonly)[] interactiveMessages = [];
 

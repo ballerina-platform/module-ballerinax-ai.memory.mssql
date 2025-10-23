@@ -418,7 +418,34 @@ function testMaxMessageCountLessThanInteractiveMessagesPresentInDbOnStart() retu
     if res is () {
         test:assertFail("Expected an error when adding message to a full store");
     }
-    test:assertEquals(res.message(), "Cannot add more messages. Maximum limit of '3' reached for key: 'key1'"); 
+    test:assertEquals(res.message(), "Failed to add chat message: " +
+        "Cannot load messages from the database: Message count '4' exceeds maximum limit of '3' for key: 'key1'"); 
+}
+
+@test:Config {
+    before: dropTable
+}
+function testRetrievalWithMaxMessageCountLessThanInteractiveMessagesPresentInDbOnStart() returns error? {
+    mssql:Client cl = getClient();
+    ShortTermMemoryStore store = check new (cl, 3);
+
+    _ = check cl->batchExecute([
+        `INSERT INTO ChatMessages (MessageKey, MessageRole, MessageJson) VALUES 
+        (${K1}, ${K1M1.role}, ${K1M1.toJsonString()})`,
+        `INSERT INTO ChatMessages (MessageKey, MessageRole, MessageJson) VALUES 
+        (${K1}, ${k1m2.role}, ${k1m2.toJsonString()})`,
+        `INSERT INTO ChatMessages (MessageKey, MessageRole, MessageJson) VALUES 
+        (${K1}, ${K1M3.role}, ${K1M3.toJsonString()})`,
+        `INSERT INTO ChatMessages (MessageKey, MessageRole, MessageJson) VALUES 
+        (${K1}, ${K1M4.role}, ${K1M4.toJsonString()})`
+    ]);
+
+    ai:ChatInteractiveMessage[]|Error interactiveMessages = store.getChatInteractiveMessages(K1);
+    if interactiveMessages is ai:ChatInteractiveMessage[] {
+        test:assertFail("Expected an error when retrieving messages when database entries exceed max limit");
+    }
+    test:assertEquals(interactiveMessages.message(), "Failed to retrieve chat messages: " +
+        "Cannot load messages from the database: Message count '4' exceeds maximum limit of '3' for key: 'key1'"); 
 }
 
 function assertAllMessages(ShortTermMemoryStore store, string key, ai:ChatMessage[] expected) returns error? {
