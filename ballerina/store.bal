@@ -205,22 +205,13 @@ public isolated class ShortTermMemoryStore {
         final readonly & ai:ChatMessage immutableMessage = mapToImmutableMessage(message);
         lock {
             CachedMessages? cacheEntry = self.getCacheEntry(key);
-            if cacheEntry is CachedMessages {
-                if immutableMessage is ai:ChatSystemMessage {
-                    cacheEntry.systemMessage = immutableMessage;
-                } else {
-                    cacheEntry.interactiveMessages.push(immutableMessage);
-                }
+            if cacheEntry is () {
                 return;
             }
-            do {
-                if immutableMessage is ai:ChatSystemMessage {
-                    check self.cache.put(key, <CachedMessages> {systemMessage: immutableMessage, interactiveMessages: []});
-                } else {
-                    check self.cache.put(key, <CachedMessages> {interactiveMessages: [immutableMessage]});
-                }
-            } on fail {
-                self.removeCacheEntry(key);
+            if immutableMessage is ai:ChatSystemMessage {
+                cacheEntry.systemMessage = immutableMessage;
+            } else {
+                cacheEntry.interactiveMessages.push(immutableMessage);
             }
         }
     }
@@ -316,7 +307,7 @@ public isolated class ShortTermMemoryStore {
     # + return - true if the memory store is full, false otherwise, or an `Error` error if the operation fails
     public isolated function isFull(string key) returns boolean|Error {
         ai:ChatInteractiveMessage[] interactiveMessages = check self.getChatInteractiveMessages(key);
-        return interactiveMessages.length() == self.maxMessagesPerKey;
+        return interactiveMessages.length() >= self.maxMessagesPerKey;
     }
 
     private isolated function initializeDatabase() returns Error? {

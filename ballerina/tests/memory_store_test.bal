@@ -369,6 +369,58 @@ function testFillingUp() returns error? {
     test:assertEquals(res.message(), "Cannot add more messages. Maximum limit of '3' reached for key: 'key1'");
 }
 
+@test:Config {
+    before: dropTable
+}
+function testUpdateWithSystemMessageWhenInteractiveMessagesPresentInDbOnStart() returns error? {
+    mssql:Client cl = getClient();
+    ShortTermMemoryStore store = check new (cl, 5);
+
+    _ = check cl->batchExecute([
+        `INSERT INTO ChatMessages (MessageKey, MessageRole, MessageJson) VALUES 
+        (${K1}, ${K1M1.role}, ${K1M1.toJsonString()})`,
+        `INSERT INTO ChatMessages (MessageKey, MessageRole, MessageJson) VALUES 
+        (${K1}, ${k1m2.role}, ${k1m2.toJsonString()})`
+    ]);
+
+    check store.put(K1, K1SM1);
+    
+    check assertFromDatabase(cl, K1, [K1SM1], SYSTEM);
+    check assertFromDatabase(cl, K1, [K1M1, k1m2], INTERACTIVE);
+    check assertFromDatabase(cl, K1, [K1M1, k1m2, K1SM1]);
+
+    check assertSystemMessage(store, K1, K1SM1);
+    check assertInteractiveMessages(store, K1, [K1M1, k1m2]);
+    check assertAllMessages(store, K1, [K1SM1, K1M1, k1m2]);    
+}
+
+@test:Config {
+    before: dropTable
+}
+function testMaxMessageCountLessThanInteractiveMessagesPresentInDbOnStart() returns error? {
+    mssql:Client cl = getClient();
+    ShortTermMemoryStore store = check new (cl, 3);
+
+    _ = check cl->batchExecute([
+        `INSERT INTO ChatMessages (MessageKey, MessageRole, MessageJson) VALUES 
+        (${K1}, ${K1M1.role}, ${K1M1.toJsonString()})`,
+        `INSERT INTO ChatMessages (MessageKey, MessageRole, MessageJson) VALUES 
+        (${K1}, ${k1m2.role}, ${k1m2.toJsonString()})`,
+        `INSERT INTO ChatMessages (MessageKey, MessageRole, MessageJson) VALUES 
+        (${K1}, ${K1M3.role}, ${K1M3.toJsonString()})`,
+        `INSERT INTO ChatMessages (MessageKey, MessageRole, MessageJson) VALUES 
+        (${K1}, ${K1M4.role}, ${K1M4.toJsonString()})`
+    ]);
+
+    test:assertTrue(check store.isFull(K1));
+
+    Error? res = store.put(K1, <ai:ChatUserMessage>{role: ai:USER, content: "Thank you!"});
+    if res is () {
+        test:assertFail("Expected an error when adding message to a full store");
+    }
+    test:assertEquals(res.message(), "Cannot add more messages. Maximum limit of '3' reached for key: 'key1'"); 
+}
+
 function assertAllMessages(ShortTermMemoryStore store, string key, ai:ChatMessage[] expected) returns error? {
     ai:ChatMessage[] actual = check store.getAll(key);
     int actualLength = actual.length();
