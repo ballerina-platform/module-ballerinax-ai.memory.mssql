@@ -310,6 +310,13 @@ function testSystemMessageOverwrite() returns error? {
     check assertFromDatabase(cl, K1, [k1sm2], SYSTEM);
     check assertFromDatabase(cl, K1, [K1M1, k1m2], INTERACTIVE);
     check assertFromDatabase(cl, K1, [k1sm2, K1M1, k1m2]);
+
+    stream<DatabaseRecord, error?> fromDb = cl->query(
+        `SELECT MessageJson FROM ChatMessages WHERE MessageKey = ${K1} AND MessageRole = 'SYSTEM'`);
+    DatabaseRecord[] records = check from DatabaseRecord dbRecord in fromDb select dbRecord;
+    test:assertEquals(records.length(), 1);
+    ChatSystemMessageDatabaseMessage dbSystemMessage = check records[0].MessageJson.fromJsonStringWithType();
+    assertChatMessageEquals(transformFromSystemMessageDatabaseMessage(dbSystemMessage), k1sm2);
 }
 
 @test:Config {
