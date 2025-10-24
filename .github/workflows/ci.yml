@@ -16,4 +16,4 @@ jobs:
     uses: ballerina-platform/ballerina-library/.github/workflows/build-connector-template.yml@main
     secrets: inherit
     with:
-      repo-name: module-ballerinax-ai.mssql
+      repo-name: module-ballerinax-ai.memory.mssql

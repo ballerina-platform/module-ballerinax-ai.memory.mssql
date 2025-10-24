@@ -10,10 +10,10 @@ This module provides an MS SQL-backed short-term memory store to use with AI mes
 
 Follow the steps below to use this store in your Ballerina application:
 
-1. Import the `ballerinax/ai.mssql` module.
+1. Import the `ballerinax/ai.memory.mssql` module.
 
 ```ballerina
-import ballerinax/ai.mssql;
+import ballerinax/ai.memory.mssql;
 ```
 
 Optionally, import the `ballerina/ai` and/or `ballerinax/mssql` module(s).
@@ -29,7 +29,7 @@ import ballerinax/mssql;
 
     ```ballerina
     import ballerina/ai;
-    import ballerinax/ai.mssql;
+    import ballerinax/ai.memory.mssql;
 
     configurable string host = ?;
     configurable string user = ?;
@@ -46,7 +46,7 @@ import ballerinax/mssql;
     ```ballerina
     import ballerina/ai;
     import ballerinax/mssql;
-    import ballerinax/ai.mssql as mssqlStore;
+    import ballerinax/ai.memory.mssql as mssqlStore;
 
     configurable string host = ?;
     configurable string user = ?;

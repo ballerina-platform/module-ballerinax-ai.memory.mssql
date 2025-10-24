@@ -404,7 +404,7 @@ dependencies = [
 
 [[package]]
 org = "ballerinax"
-name = "ai.mssql"
+name = "ai.memory.mssql"
 version = "0.5.0"
 dependencies = [
 	{org = "ballerina", name = "ai"},
@@ -415,7 +415,7 @@ dependencies = [
 	{org = "ballerinax", name = "mssql.driver"}
 ]
 modules = [
-	{org = "ballerinax", packageName = "ai.mssql", moduleName = "ai.mssql"}
+	{org = "ballerinax", packageName = "ai.memory.mssql", moduleName = "ai.memory.mssql"}
 ]
 
 [[package]]

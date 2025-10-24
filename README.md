@@ -1,8 +1,8 @@
 # Ballerina MSSQL-backed short-term chat message store connector
 
-[![Build](https://github.com/ballerina-platform/module-ballerinax-ai.mssql/actions/workflows/ci.yml/badge.svg)](https://github.com/ballerina-platform/module-ballerinax-ai.mssql/actions/workflows/ci.yml)
-[![GitHub Last Commit](https://img.shields.io/github/last-commit/ballerina-platform/module-ballerinax-ai.mssql.svg)](https://github.com/ballerina-platform/module-ballerinax-ai.mssql/commits/master)
-[![GitHub Issues](https://img.shields.io/github/issues/ballerina-platform/ballerina-library/module/ai.mssql.svg?label=Open%20Issues)](https://github.com/ballerina-platform/ballerina-library/labels/module%ai.mssql)
+[![Build](https://github.com/ballerina-platform/module-ballerinax-ai.memory.mssql/actions/workflows/ci.yml/badge.svg)](https://github.com/ballerina-platform/module-ballerinax-ai.memory.mssql/actions/workflows/ci.yml)
+[![GitHub Last Commit](https://img.shields.io/github/last-commit/ballerina-platform/module-ballerinax-ai.memory.mssql.svg)](https://github.com/ballerina-platform/module-ballerinax-ai.memory.mssql/commits/master)
+[![GitHub Issues](https://img.shields.io/github/issues/ballerina-platform/ballerina-library/module/ai.memory.mssql.svg?label=Open%20Issues)](https://github.com/ballerina-platform/ballerina-library/labels/module%ai.memory.mssql)
 
 ## Overview
 
@@ -16,10 +16,10 @@ This module provides an MS SQL-backed short-term memory store to use with AI mes
 
 Follow the steps below to use this store in your Ballerina application:
 
-1. Import the `ballerinax/ai.mssql` module.
+1. Import the `ballerinax/ai.memory.mssql` module.
 
 ```ballerina
-import ballerinax/ai.mssql;
+import ballerinax/ai.memory.mssql;
 ```
 
 Optionally, import the `ballerina/ai` and/or `ballerinax/mssql` module(s).
@@ -35,7 +35,7 @@ import ballerinax/mssql;
 
     ```ballerina
     import ballerina/ai;
-    import ballerinax/ai.mssql;
+    import ballerinax/ai.memory.mssql;
 
     configurable string host = ?;
     configurable string user = ?;
@@ -52,7 +52,7 @@ import ballerinax/mssql;
     ```ballerina
     import ballerina/ai;
     import ballerinax/mssql;
-    import ballerinax/ai.mssql as mssqlStore;
+    import ballerinax/ai.memory.mssql as mssqlStore;
 
     configurable string host = ?;
     configurable string user = ?;
@@ -159,7 +159,7 @@ All the contributors are encouraged to read the [Ballerina Code of Conduct](http
 
 ## Useful links
 
-* For more information go to the [`ai.mssql` package](https://central.ballerina.io/ballerinax/ai.mssql/latest).
+* For more information go to the [`ai.memory.mssql` package](https://central.ballerina.io/ballerinax/ai.memory.mssql/latest).
 * For example demonstrations of the usage, go to [Ballerina By Examples](https://ballerina.io/learn/by-example/).
 * Chat live with us via our [Discord server](https://discord.gg/ballerinalang).
 * Post all technical questions on Stack Overflow with the [#ballerina](https://stackoverflow.com/questions/tagged/ballerina) tag.

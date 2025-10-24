@@ -27,11 +27,11 @@ plugins {
     id "com.gradle.enterprise" version "3.2"
 }
 
-rootProject.name = 'module-ballerinax-ai.mssql'
+rootProject.name = 'module-ballerinax-ai.memory.mssql'
 
-include ':ai.mssql-ballerina'
+include ':ai.memory.mssql-ballerina'
 
-project(':ai.mssql-ballerina').projectDir = file("ballerina")
+project(':ai.memory.mssql-ballerina').projectDir = file("ballerina")
 
 gradleEnterprise {
     buildScan {

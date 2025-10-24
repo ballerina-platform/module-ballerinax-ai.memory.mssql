@@ -58,7 +58,7 @@ allprojects {
 def moduleVersion = project.version.replace("-SNAPSHOT", "")
 
 task build {
-    dependsOn(':ai.mssql-ballerina:build')
+    dependsOn(':ai.memory.mssql-ballerina:build')
 }
 
 release {
