@@ -433,7 +433,8 @@ public isolated class ShortTermMemoryStore {
                 return ();
             }
 
-            // Since we have sole control over what is stored in the cache, this cast is safe.
+            // Since we have sole control over what is stored in the cache, this use of
+            // `checkpanic` is safe.
             return checkpanic cacheEntry.ensureType();
         }
     }
