@@ -55,7 +55,7 @@ public isolated class ShortTermMemoryStore {
     *ai:ShortTermMemoryStore;
 
     private final mssql:Client dbClient;
-    private final cache:Cache cache;
+    private final cache:Cache? cache;
     private final int maxMessagesPerKey;
 
     # Initializes the MS SQL-backed short-term memory store.
@@ -66,7 +66,7 @@ public isolated class ShortTermMemoryStore {
     # + returns - An error if the initialization fails
     public isolated function init(mssql:Client|DatabaseConfiguration mssqlClient, 
                                   int maxMessagesPerKey = 20,
-                                  cache:CacheConfig cacheConfig = {capacity: 20}) returns Error? {
+                                  cache:CacheConfig? cacheConfig = ()) returns Error? {
         if mssqlClient is mssql:Client {
             self.dbClient = mssqlClient;
         } else {
@@ -77,7 +77,7 @@ public isolated class ShortTermMemoryStore {
             self.dbClient = initializedClient;
         }
         self.maxMessagesPerKey = maxMessagesPerKey;
-        self.cache = new (cacheConfig);
+        self.cache = cacheConfig is () ? () : new (cacheConfig);
         return self.initializeDatabase();
     }
 
@@ -396,8 +396,9 @@ public isolated class ShortTermMemoryStore {
 
             final ai:ChatInteractiveMessage[] & readonly immutableInteractiveMessages = interactiveMessages.cloneReadOnly();
             lock {
-                if !self.cache.hasKey(key) {
-                    check self.cache.put(
+                cache:Cache? cache = self.cache;
+                if cache !is () && !cache.hasKey(key) {
+                    check cache.put(
                         key, <CachedMessages> {systemMessage, interactiveMessages: [...immutableInteractiveMessages]});
                 }
             }
@@ -413,8 +414,9 @@ public isolated class ShortTermMemoryStore {
 
     private isolated function removeCacheEntry(string key) {
         lock {
-            if self.cache.hasKey(key) {
-                cache:Error? err = self.cache.invalidate(key);
+            cache:Cache? cache = self.cache;
+            if cache !is () && cache.hasKey(key) {
+                cache:Error? err = cache.invalidate(key);
                 if err is cache:Error {
                     // Ignore, as this is for non-existent key
                 }
@@ -424,11 +426,12 @@ public isolated class ShortTermMemoryStore {
 
     private isolated function getCacheEntry(string key) returns CachedMessages? {
         lock {
-            if !self.cache.hasKey(key) {
+            cache:Cache? cache = self.cache;
+            if cache is () || !cache.hasKey(key) {
                 return ();
             }
 
-            any|cache:Error cacheEntry = self.cache.get(key);
+            any|cache:Error cacheEntry = cache.get(key);
             if cacheEntry is cache:Error {
                 return ();
             }
