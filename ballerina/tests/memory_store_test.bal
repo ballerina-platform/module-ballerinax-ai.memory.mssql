@@ -15,12 +15,14 @@
 // under the License.
 
 import ballerina/ai;
+import ballerina/cache;
 import ballerina/sql;
 import ballerina/test;
 import ballerinax/mssql;
 
 const string K1 = "key1";
 const string K2 = "key2";
+const string K3 = "key3";
 
 const ai:ChatSystemMessage K1SM1 = {role: ai:SYSTEM, content: "You are a helpful assistant that is aware of the weather."};
 
@@ -548,4 +550,283 @@ isolated function assertContentEquals(ai:Prompt|string actual, ai:Prompt|string 
     }
 
     test:assertFail("Actual and expected content do not match");
+}
+
+@test:Config {
+    before: dropTable
+}
+function testBasicStoreWithCache() returns error? {
+    mssql:Client cl = getClient();
+    cache:CacheConfig cacheConfig = {
+        capacity: 10,
+        evictionFactor: 0.2
+    };
+    ShortTermMemoryStore store = check new (cl, cacheConfig = cacheConfig);
+
+    check store.put(K1, K1SM1);
+    check store.put(K1, K1M1);
+    check store.put(K1, k1m2);
+    check store.put(K2, K2M1);
+
+    // First retrieval - should load from database and cache
+    check assertAllMessages(store, K1, [K1SM1, K1M1, k1m2]);
+    check assertInteractiveMessages(store, K1, [K1M1, k1m2]);
+
+    // Second retrieval - should use cache (verify by checking results still match)
+    check assertAllMessages(store, K1, [K1SM1, K1M1, k1m2]);
+    check assertInteractiveMessages(store, K1, [K1M1, k1m2]);
+
+    check assertAllMessages(store, K2, [K2M1]);
+    check assertInteractiveMessages(store, K2, [K2M1]);
+}
+
+@test:Config {
+    before: dropTable
+}
+function testCacheUpdateOnPut() returns error? {
+    mssql:Client cl = getClient();
+    cache:CacheConfig cacheConfig = {
+        capacity: 10,
+        evictionFactor: 0.2
+    };
+    ShortTermMemoryStore store = check new (cl, cacheConfig = cacheConfig);
+
+    check store.put(K1, K1SM1);
+    check store.put(K1, K1M1);
+
+    // Load into cache
+    check assertAllMessages(store, K1, [K1SM1, K1M1]);
+
+    // Add more messages - cache should be updated
+    check store.put(K1, k1m2);
+    check store.put(K1, K1M3);
+
+    // Verify cache reflects the updates
+    check assertAllMessages(store, K1, [K1SM1, K1M1, k1m2, K1M3]);
+    check assertInteractiveMessages(store, K1, [K1M1, k1m2, K1M3]);
+}
+
+@test:Config {
+    before: dropTable
+}
+function testCacheSystemMessageUpdate() returns error? {
+    mssql:Client cl = getClient();
+    cache:CacheConfig cacheConfig = {
+        capacity: 10,
+        evictionFactor: 0.2
+    };
+    ShortTermMemoryStore store = check new (cl, cacheConfig = cacheConfig);
+
+    check store.put(K1, K1SM1);
+    check store.put(K1, K1M1);
+
+    // Load into cache
+    check assertSystemMessage(store, K1, K1SM1);
+    check assertAllMessages(store, K1, [K1SM1, K1M1]);
+
+    // Update system message
+    final readonly & ai:ChatSystemMessage k1sm2 = {
+        role: ai:SYSTEM,
+        content: "You are a helpful assistant that is aware of sports."
+    };
+    check store.put(K1, k1sm2);
+
+    // Verify cache reflects the system message update
+    check assertSystemMessage(store, K1, k1sm2);
+    check assertAllMessages(store, K1, [k1sm2, K1M1]);
+}
+
+@test:Config {
+    before: dropTable
+}
+function testCacheInvalidationOnRemoveAll() returns error? {
+    mssql:Client cl = getClient();
+    cache:CacheConfig cacheConfig = {
+        capacity: 10,
+        evictionFactor: 0.2
+    };
+    ShortTermMemoryStore store = check new (cl, cacheConfig = cacheConfig);
+
+    check store.put(K1, K1SM1);
+    check store.put(K1, K1M1);
+    check store.put(K1, k1m2);
+
+    // Load into cache
+    check assertAllMessages(store, K1, [K1SM1, K1M1, k1m2]);
+
+    // Remove all messages
+    check store.removeAll(K1);
+
+    // Verify cache is invalidated and returns empty
+    check assertAllMessages(store, K1, []);
+    check assertSystemMessage(store, K1, ());
+    check assertInteractiveMessages(store, K1, []);
+}
+
+@test:Config {
+    before: dropTable
+}
+function testCacheInvalidationOnRemoveInteractiveMessages() returns error? {
+    mssql:Client cl = getClient();
+    cache:CacheConfig cacheConfig = {
+        capacity: 10,
+        evictionFactor: 0.2
+    };
+    ShortTermMemoryStore store = check new (cl, cacheConfig = cacheConfig);
+
+    check store.put(K1, K1SM1);
+    check store.put(K1, K1M1);
+    check store.put(K1, k1m2);
+    check store.put(K1, K1M3);
+
+    // Load into cache
+    check assertAllMessages(store, K1, [K1SM1, K1M1, k1m2, K1M3]);
+
+    // Remove all interactive messages
+    check store.removeChatInteractiveMessages(K1);
+
+    // Verify cache reflects the removal
+    check assertAllMessages(store, K1, [K1SM1]);
+    check assertSystemMessage(store, K1, K1SM1);
+    check assertInteractiveMessages(store, K1, []);
+}
+
+@test:Config {
+    before: dropTable
+}
+function testCacheInvalidationOnRemoveSubsetOfInteractiveMessages() returns error? {
+    mssql:Client cl = getClient();
+    cache:CacheConfig cacheConfig = {
+        capacity: 10,
+        evictionFactor: 0.2
+    };
+    ShortTermMemoryStore store = check new (cl, cacheConfig = cacheConfig);
+
+    check store.put(K1, K1SM1);
+    check store.put(K1, K1M1);
+    check store.put(K1, k1m2);
+    check store.put(K1, K1M3);
+    check store.put(K1, K1M4);
+
+    // Load into cache
+    check assertAllMessages(store, K1, [K1SM1, K1M1, k1m2, K1M3, K1M4]);
+
+    // Remove first 2 interactive messages
+    check store.removeChatInteractiveMessages(K1, 2);
+
+    // Verify cache reflects the partial removal
+    check assertAllMessages(store, K1, [K1SM1, K1M3, K1M4]);
+    check assertInteractiveMessages(store, K1, [K1M3, K1M4]);
+}
+
+@test:Config {
+    before: dropTable
+}
+function testCacheUpdateOnRemoveSystemMessage() returns error? {
+    mssql:Client cl = getClient();
+    cache:CacheConfig cacheConfig = {
+        capacity: 10,
+        evictionFactor: 0.2
+    };
+    ShortTermMemoryStore store = check new (cl, cacheConfig = cacheConfig);
+
+    check store.put(K1, K1SM1);
+    check store.put(K1, K1M1);
+    check store.put(K1, k1m2);
+
+    // Load into cache
+    check assertAllMessages(store, K1, [K1SM1, K1M1, k1m2]);
+    check assertSystemMessage(store, K1, K1SM1);
+
+    // Remove system message
+    check store.removeChatSystemMessage(K1);
+
+    // Verify cache reflects the system message removal
+    check assertAllMessages(store, K1, [K1M1, k1m2]);
+    check assertSystemMessage(store, K1, ());
+    check assertInteractiveMessages(store, K1, [K1M1, k1m2]);
+}
+
+@test:Config {
+    before: dropTable
+}
+function testCacheWithMultipleKeys() returns error? {
+    mssql:Client cl = getClient();
+    cache:CacheConfig cacheConfig = {
+        capacity: 10,
+        evictionFactor: 0.2
+    };
+    ShortTermMemoryStore store = check new (cl, cacheConfig = cacheConfig);
+
+    // Add messages for K1
+    check store.put(K1, K1SM1);
+    check store.put(K1, K1M1);
+    check store.put(K1, k1m2);
+
+    // Add messages for K2
+    check store.put(K2, K2M1);
+
+    // Load both into cache
+    check assertAllMessages(store, K1, [K1SM1, K1M1, k1m2]);
+    check assertAllMessages(store, K2, [K2M1]);
+
+    // Remove K1
+    check store.removeAll(K1);
+
+    // Verify K1 is cleared but K2 is still in cache
+    check assertAllMessages(store, K1, []);
+    check assertAllMessages(store, K2, [K2M1]);
+}
+
+@test:Config {
+    before: dropTable
+}
+function testCacheWithSmallCapacity() returns error? {
+    mssql:Client cl = getClient();
+    cache:CacheConfig cacheConfig = {
+        capacity: 2,
+        evictionFactor: 0.5
+    };
+    ShortTermMemoryStore store = check new (cl, cacheConfig = cacheConfig);
+
+    check store.put(K1, K1M1);
+    check store.put(K2, K2M1);
+    check store.put(K3, K1M3);
+
+    // Load K1 and K2 into cache
+    check assertAllMessages(store, K1, [K1M1]);
+    check assertAllMessages(store, K2, [K2M1]);
+
+    // Load K3 - may evict older entries due to capacity
+    check assertAllMessages(store, K3, [K1M3]);
+
+    // All keys should still be retrievable (from cache or database)
+    check assertAllMessages(store, K1, [K1M1]);
+    check assertAllMessages(store, K2, [K2M1]);
+    check assertAllMessages(store, K3, [K1M3]);
+}
+
+@test:Config {
+    before: dropTable
+}
+function testSystemMessageRetrievalDoesNotPopulateCache() returns error? {
+    mssql:Client cl = getClient();
+    cache:CacheConfig cacheConfig = {
+        capacity: 10,
+        evictionFactor: 0.2
+    };
+    ShortTermMemoryStore store = check new (cl, cacheConfig = cacheConfig);
+
+    check store.put(K1, K1SM1);
+    check store.put(K1, K1M1);
+    check store.put(K1, k1m2);
+
+    // Retrieve only system message - should NOT populate cache
+    check assertSystemMessage(store, K1, K1SM1);
+
+    // Add more messages
+    check store.put(K1, K1M3);
+
+    // Retrieve all messages - should load from database and include K1M3
+    check assertAllMessages(store, K1, [K1SM1, K1M1, k1m2, K1M3]);
 }
