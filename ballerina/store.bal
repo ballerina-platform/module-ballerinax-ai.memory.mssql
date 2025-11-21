@@ -16,6 +16,7 @@
 
 import ballerina/ai;
 import ballerina/cache;
+import ballerina/lang.regexp;
 import ballerina/sql;
 import ballerinax/mssql;
 import ballerinax/mssql.driver as _;
@@ -57,16 +58,26 @@ public isolated class ShortTermMemoryStore {
     private final mssql:Client dbClient;
     private final cache:Cache? cache;
     private final int maxMessagesPerKey;
+    private final string tableName;
 
     # Initializes the MS SQL-backed short-term memory store.
-    # 
+    #
     # + mssqlClient - The MS SQL client or database configuration to connect to the database
     # + maxMessagesPerKey - The maximum number of interactive messages to store per key
     # + cacheConfig - The cache configuration for in-memory caching of messages
+    # + tableName - The name of the database table to store chat messages (default: "ChatMessages"). 
+    # Must start with a letter or underscore and contain only letters, digits, and underscores.
     # + returns - An error if the initialization fails
-    public isolated function init(mssql:Client|DatabaseConfiguration mssqlClient, 
-                                  int maxMessagesPerKey = 20,
-                                  cache:CacheConfig? cacheConfig = ()) returns Error? {
+    public isolated function init(mssql:Client|DatabaseConfiguration mssqlClient,
+            int maxMessagesPerKey = 20,
+            cache:CacheConfig? cacheConfig = (),
+            string tableName = "ChatMessages") returns Error? {
+        if !regexp:isFullMatch(re `^[A-Za-z_][A-Za-z0-9_]*$`, tableName) {
+            return error(string `Invalid table name: '${tableName}'.`
+                + " Table name must start with a letter or underscore, "
+                + "and can only contain letters, digits, and underscores.");
+        }
+        self.tableName = tableName;
         if mssqlClient is mssql:Client {
             self.dbClient = mssqlClient;
         } else {
@@ -82,7 +93,7 @@ public isolated class ShortTermMemoryStore {
     }
 
     # Retrieves the system message, if it was provided, for a given key.
-    # 
+    #
     # + key - The key associated with the memory
     # + return - A copy of the message if it was specified, nil if it was not, or an 
     # `Error` error if the operation fails
@@ -94,11 +105,15 @@ public isolated class ShortTermMemoryStore {
             }
         }
 
-        DatabaseRecord|sql:Error systemMessage = self.dbClient->queryRow(`
-            SELECT MessageJson 
-            FROM ChatMessages 
-            WHERE MessageKey = ${key} AND MessageRole = 'system'
-            ORDER BY CreatedAt ASC`);
+        DatabaseRecord|sql:Error systemMessage = self.dbClient->queryRow(
+            replaceTableNamePlaceholder(`
+                SELECT MessageJson 
+                FROM $_tableName_$
+                WHERE MessageKey = ${key} AND MessageRole = 'system'
+                ORDER BY CreatedAt ASC`,
+                self.tableName
+            )
+        );
 
         if systemMessage is sql:NoRowsError {
             return ();
@@ -120,7 +135,7 @@ public isolated class ShortTermMemoryStore {
 
     # Retrieves all stored interactive chat messages (i.e., all chat messages except the system
     # message) for a given key.
-    # 
+    #
     # + key - The key associated with the memory
     # + return - A copy of the messages, or an `Error` error if the operation fails
     public isolated function getChatInteractiveMessages(string key) returns ai:ChatInteractiveMessage[]|Error {
@@ -144,10 +159,10 @@ public isolated class ShortTermMemoryStore {
     }
 
     # Retrieves all stored chat messages for a given key.
-    # 
+    #
     # + key - The key associated with the memory
     # + return - A copy of the messages, or an `Error` error if the operation fails
-    public isolated function getAll(string key) 
+    public isolated function getAll(string key)
             returns [ai:ChatSystemMessage, ai:ChatInteractiveMessage...]|ai:ChatInteractiveMessage[]|Error {
         lock {
             CachedMessages? cacheEntry = self.getCacheEntry(key);
@@ -169,7 +184,7 @@ public isolated class ShortTermMemoryStore {
     }
 
     # Adds a chat message to the memory store for a given key.
-    # 
+    #
     # + key - The key associated with the memory
     # + message - The `ChatMessage` message to store
     # + return - nil on success, or an `Error` if the operation fails
@@ -178,13 +193,17 @@ public isolated class ShortTermMemoryStore {
 
         if dbMessage is ChatSystemMessageDatabaseMessage {
             // Upsert system message for the key
-            sql:ExecutionResult|sql:Error upsertResult = self.dbClient->execute(`
-                IF EXISTS (SELECT 1 FROM ChatMessages WHERE MessageKey = ${key} AND MessageRole = 'system')
-                    UPDATE ChatMessages SET MessageJson = ${dbMessage.toJsonString()}
-                    WHERE MessageKey = ${key} AND MessageRole = 'system'
-                ELSE
-                    INSERT INTO ChatMessages (MessageKey, MessageRole, MessageJson) 
-                    VALUES (${key}, ${dbMessage.role}, ${dbMessage.toJsonString()})`);
+            sql:ExecutionResult|sql:Error upsertResult = self.dbClient->execute(
+                replaceTableNamePlaceholder(`
+                    IF EXISTS (SELECT 1 FROM $_tableName_$ WHERE MessageKey = ${key} AND MessageRole = 'system')
+                        UPDATE $_tableName_$ SET MessageJson = ${dbMessage.toJsonString()}
+                        WHERE MessageKey = ${key} AND MessageRole = 'system'
+                    ELSE
+                        INSERT INTO $_tableName_$ (MessageKey, MessageRole, MessageJson) 
+                        VALUES (${key}, ${dbMessage.role}, ${dbMessage.toJsonString()})`,
+                    self.tableName
+                )
+            );
             if upsertResult is sql:Error {
                 return error("Failed to upsert system message: " + upsertResult.message(), upsertResult);
             }
@@ -202,9 +221,13 @@ public isolated class ShortTermMemoryStore {
                         self.maxMessagesPerKey}' reached for key: '${key}'`);
                 }
 
-                _ = check self.dbClient->execute(`
-                    INSERT INTO ChatMessages (MessageKey, MessageRole, MessageJson) 
-                    VALUES (${key}, ${dbMessage.role}, ${dbMessage.toJsonString()})`);
+                _ = check self.dbClient->execute(
+                    replaceTableNamePlaceholder(`
+                        INSERT INTO $_tableName_$ (MessageKey, MessageRole, MessageJson) 
+                        VALUES (${key}, ${dbMessage.role}, ${dbMessage.toJsonString()})`,
+                        self.tableName
+                    )
+                );
             } on fail error err {
                 return error("Failed to add chat message: " + err.message(), err);
             }
@@ -225,14 +248,18 @@ public isolated class ShortTermMemoryStore {
     }
 
     # Removes the system chat message, if specified, for a given key.
-    # 
+    #
     # + key - The key associated with the memory
     # + return - nil on success or if there is no system chat message against the key, 
-    #       or an `Error` error if the operation fails
+    # or an `Error` error if the operation fails
     public isolated function removeChatSystemMessage(string key) returns Error? {
-        sql:ExecutionResult|sql:Error deleteResult = self.dbClient->execute(`
-                DELETE FROM ChatMessages 
-                WHERE MessageKey = ${key} AND MessageRole = 'system'`);
+        sql:ExecutionResult|sql:Error deleteResult = self.dbClient->execute(
+            replaceTableNamePlaceholder(`
+                DELETE FROM $_tableName_$ 
+                WHERE MessageKey = ${key} AND MessageRole = 'system'`,
+                self.tableName
+            )
+        );
         if deleteResult is sql:Error {
             self.removeCacheEntry(key);
             return error("Failed to delete existing system message: " + deleteResult.message(), deleteResult);
@@ -250,29 +277,36 @@ public isolated class ShortTermMemoryStore {
 
     # Removes all stored interactive chat messages (i.e., all chat messages except the system
     # message) for a given key.
-    # 
+    #
     # + key - The key associated with the memory
     # + count - Optional number of messages to remove, starting from the first interactive message in; 
-    #               if not provided, removes all messages
+    # if not provided, removes all messages
     # + return - nil on success, or an `Error` error if the operation fails
     public isolated function removeChatInteractiveMessages(string key, int? count = ()) returns Error? {
         if count is () {
-            sql:ExecutionResult|sql:Error result = self.dbClient->execute(`
-                DELETE FROM ChatMessages 
-                WHERE MessageKey = ${key} AND MessageRole != 'system'`);
+            sql:ExecutionResult|sql:Error result = self.dbClient->execute(
+                replaceTableNamePlaceholder(`
+                    DELETE FROM $_tableName_$ 
+                    WHERE MessageKey = ${key} AND MessageRole != 'system'`,
+                    self.tableName
+                )
+            );
             if result is sql:Error {
                 self.removeCacheEntry(key);
                 return error("Failed to delete chat messages: " + result.message(), result);
             }
         } else {
-            sql:ExecutionResult|sql:Error result = self.dbClient->execute(`
-                DELETE FROM ChatMessages 
-                WHERE Id IN (
-                    SELECT TOP(${count}) Id 
-                    FROM ChatMessages 
-                    WHERE MessageKey = ${key} AND MessageRole != 'system'
-                    ORDER BY CreatedAt ASC
-                )`);
+            sql:ExecutionResult|sql:Error result = self.dbClient->execute(
+                replaceTableNamePlaceholder(`
+                    DELETE FROM $_tableName_$ 
+                    WHERE Id IN (
+                        SELECT TOP(${count}) Id 
+                        FROM $_tableName_$ 
+                        WHERE MessageKey = ${key} AND MessageRole != 'system'
+                        ORDER BY CreatedAt ASC
+                    )`, self.tableName
+                )
+            );
             if result is sql:Error {
                 self.removeCacheEntry(key);
                 return error("Failed to delete chat messages: " + result.message(), result);
@@ -295,22 +329,26 @@ public isolated class ShortTermMemoryStore {
     }
 
     # Removes all stored chat messages for a given key.
-    # 
+    #
     # + key - The key associated with the memory
     # + return - nil on success, or an `Error` error if the operation fails
     public isolated function removeAll(string key) returns Error? {
-        sql:ExecutionResult|sql:Error result = self.dbClient->execute(`
-                DELETE FROM ChatMessages 
-                WHERE MessageKey = ${key}`);
+        sql:ExecutionResult|sql:Error result = self.dbClient->execute(
+            replaceTableNamePlaceholder(`
+                DELETE FROM $_tableName_$ 
+                WHERE MessageKey = ${key}`,
+                self.tableName
+            )
+        );
         if result is sql:Error {
-            self.removeCacheEntry(key);    
+            self.removeCacheEntry(key);
             return error("Failed to delete chat messages: " + result.message(), result);
         }
         self.removeCacheEntry(key);
     }
 
     # Checks if the memory store is full for a given key.
-    # 
+    #
     # + key - The key associated with the memory
     # + return - true if the memory store is full, false otherwise, or an `Error` error if the operation fails
     public isolated function isFull(string key) returns boolean|Error {
@@ -329,10 +367,14 @@ public isolated class ShortTermMemoryStore {
 
     private isolated function initializeDatabase() returns Error? {
         int|sql:Error tableExists = self.dbClient->queryRow(
-            `SELECT IIF(OBJECT_ID('dbo.ChatMessages', 'U') IS NOT NULL, 1, 0) AS TableExists;`);
+            replaceTableNamePlaceholder(
+                `SELECT IIF(OBJECT_ID('dbo.$_tableName_$', 'U') IS NOT NULL, 1, 0) AS TableExists;`,
+                self.tableName
+            )
+        );
 
         if tableExists is sql:Error {
-            return error("Failed to check existence of the ChatMessages table: " + tableExists.message(), 
+            return error(string `Failed to check existence of the ${self.tableName} table: ${tableExists.message()}`,
                             tableExists);
         }
 
@@ -341,29 +383,36 @@ public isolated class ShortTermMemoryStore {
         }
 
         sql:ExecutionResult|sql:Error result = self.dbClient->execute(
-            `CREATE TABLE ChatMessages ( 
-                Id INT IDENTITY(1,1) PRIMARY KEY, 
-                MessageKey NVARCHAR(100) NOT NULL, 
-                MessageRole NVARCHAR(20) NOT NULL CHECK (MessageRole IN ('user', 'system', 'assistant', 'function')), 
-                MessageJson NVARCHAR(MAX) NOT NULL, 
-                CreatedAt DATETIME2 NOT NULL DEFAULT SYSDATETIME()
-            );`);
+            replaceTableNamePlaceholder(
+                `CREATE TABLE $_tableName_$ ( 
+                    Id INT IDENTITY(1,1) PRIMARY KEY, 
+                    MessageKey NVARCHAR(100) NOT NULL, 
+                    MessageRole NVARCHAR(20) NOT NULL CHECK (MessageRole IN ('user', 'system', 'assistant', 'function')), 
+                    MessageJson NVARCHAR(MAX) NOT NULL, 
+                    CreatedAt DATETIME2 NOT NULL DEFAULT SYSDATETIME()
+                );`,
+                self.tableName
+                )
+            );
         if result is sql:Error {
-            return error("Failed to create ChatMessages table: " + result.message(), result);
+            return error(string `Failed to create ${self.tableName} table: ${result.message()}`, result);
         }
     }
 
-    private isolated function cacheFromDatabase(string key) 
-            returns readonly & ([ai:ChatSystemMessage,  ai:ChatInteractiveMessage...]|ai:ChatInteractiveMessage[])|Error {
-        int|sql:Error messageCount = self.dbClient->queryRow(`
-            SELECT COUNT(*) as count 
-            FROM ChatMessages 
-            WHERE MessageKey = ${key} AND MessageRole != 'system'`);
+    private isolated function cacheFromDatabase(string key)
+            returns readonly & ([ai:ChatSystemMessage, ai:ChatInteractiveMessage...]|ai:ChatInteractiveMessage[])|Error {
+        int|sql:Error messageCount = self.dbClient->queryRow(
+            replaceTableNamePlaceholder(`
+                SELECT COUNT(*) as count 
+                FROM $_tableName_$ 
+                WHERE MessageKey = ${key} AND MessageRole != 'system'`,
+                self.tableName
+                )
+            );
 
         if messageCount is sql:Error {
             return error("Failed to load message count from the database: " + messageCount.message(), messageCount);
         }
-
 
         if messageCount > self.maxMessagesPerKey {
             return error ExceedsSizeError(string `Cannot load messages from the database: Message count '${
@@ -371,35 +420,38 @@ public isolated class ShortTermMemoryStore {
         }
 
         do {
-            stream<DatabaseRecord, sql:Error?> messages = self.dbClient->query(`
-                SELECT MessageJson 
-                FROM ChatMessages 
-                WHERE MessageKey = ${key}
-                ORDER BY CreatedAt ASC`);
+            stream<DatabaseRecord, sql:Error?> messages = self.dbClient->query(
+                replaceTableNamePlaceholder(`
+                    SELECT MessageJson 
+                    FROM $_tableName_$ 
+                    WHERE MessageKey = ${key}
+                    ORDER BY CreatedAt ASC`, self.tableName
+                )
+            );
             (ai:ChatSystemMessage & readonly)? systemMessage = ();
             (ai:ChatInteractiveMessage & readonly)[] interactiveMessages = [];
 
             check from DatabaseRecord {MessageJson} in messages
-            do {
-                ChatMessageDatabaseMessage|error dbMessage = MessageJson.fromJsonStringWithType();
-                if dbMessage is error {
-                    return error("Failed to parse chat message from database: " + dbMessage.message(), dbMessage);
-                }
+                do {
+                    ChatMessageDatabaseMessage|error dbMessage = MessageJson.fromJsonStringWithType();
+                    if dbMessage is error {
+                        return error("Failed to parse chat message from database: " + dbMessage.message(), dbMessage);
+                    }
 
-                if dbMessage is ChatSystemMessageDatabaseMessage {
-                    systemMessage = transformFromSystemMessageDatabaseMessage(dbMessage);
-                } else {
-                    interactiveMessages.push(transformFromInteractiveMessageDatabaseMessage(
-                        <ChatInteractiveMessageDatabaseMessage> dbMessage));
-                }
-            };
+                    if dbMessage is ChatSystemMessageDatabaseMessage {
+                        systemMessage = transformFromSystemMessageDatabaseMessage(dbMessage);
+                    } else {
+                        interactiveMessages.push(transformFromInteractiveMessageDatabaseMessage(
+                                <ChatInteractiveMessageDatabaseMessage>dbMessage));
+                    }
+                };
 
             final ai:ChatInteractiveMessage[] & readonly immutableInteractiveMessages = interactiveMessages.cloneReadOnly();
             lock {
                 cache:Cache? cache = self.cache;
                 if cache !is () && !cache.hasKey(key) {
                     check cache.put(
-                        key, <CachedMessages> {systemMessage, interactiveMessages: [...immutableInteractiveMessages]});
+                        key, <CachedMessages>{systemMessage, interactiveMessages: [...immutableInteractiveMessages]});
                 }
             }
 
@@ -409,7 +461,7 @@ public isolated class ShortTermMemoryStore {
             return [systemMessage, ...interactiveMessages];
         } on fail error err {
             return error("Failed to retrieve chat messages: " + err.message(), err);
-        }        
+        }
     }
 
     private isolated function removeCacheEntry(string key) {
@@ -441,4 +493,11 @@ public isolated class ShortTermMemoryStore {
             return checkpanic cacheEntry.ensureType();
         }
     }
+}
+
+isolated function replaceTableNamePlaceholder(sql:ParameterizedQuery query, string tableName) returns sql:ParameterizedQuery {
+    final (string[] & readonly) strings = query.strings
+        .'map(value => re `\$_tableName_\$`.replaceAll(value, tableName)).cloneReadOnly();
+    query.strings = strings;
+    return query;
 }
