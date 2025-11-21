@@ -65,6 +65,8 @@ public isolated class ShortTermMemoryStore {
     # + mssqlClient - The MS SQL client or database configuration to connect to the database
     # + maxMessagesPerKey - The maximum number of interactive messages to store per key
     # + cacheConfig - The cache configuration for in-memory caching of messages
+    # + tableName - The name of the database table to store chat messages (default: "ChatMessages"). 
+    # Must start with a letter or underscore and contain only letters, digits, and underscores.
     # + returns - An error if the initialization fails
     public isolated function init(mssql:Client|DatabaseConfiguration mssqlClient,
             int maxMessagesPerKey = 20,
