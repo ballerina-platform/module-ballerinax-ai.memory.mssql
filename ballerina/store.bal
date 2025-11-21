@@ -374,7 +374,7 @@ public isolated class ShortTermMemoryStore {
         );
 
         if tableExists is sql:Error {
-            return error(string `Failed to check existence of the ${self.tableName} table: ` + tableExists.message(),
+            return error(string `Failed to check existence of the ${self.tableName} table: ${tableExists.message()}`,
                             tableExists);
         }
 
@@ -395,7 +395,7 @@ public isolated class ShortTermMemoryStore {
                 )
             );
         if result is sql:Error {
-            return error(string `Failed to create ${self.tableName} table: ` + result.message(), result);
+            return error(string `Failed to create ${self.tableName} table: ${result.message()}`, result);
         }
     }
 
