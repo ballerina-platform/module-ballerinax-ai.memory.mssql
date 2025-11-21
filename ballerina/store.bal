@@ -372,7 +372,7 @@ public isolated class ShortTermMemoryStore {
         );
 
         if tableExists is sql:Error {
-            return error(string `Failed to check existence of the $_tableName_$ table: ` + tableExists.message(),
+            return error(string `Failed to check existence of the ${self.tableName} table: ` + tableExists.message(),
                             tableExists);
         }
 
