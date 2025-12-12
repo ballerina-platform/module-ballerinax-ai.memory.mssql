@@ -601,8 +601,8 @@ public isolated class ShortTermMemoryStore {
 
     # Retrieves the maximum number of interactive messages that can be stored for each key.
     #
-    # + return - he configured maximum size of the message store per key
-    public isolated function getSize() returns int {
+    # + return - The configured capacity of the message store per key
+    public isolated function getCapacity() returns int {
         return self.maxMessagesPerKey;
     }
 }
