@@ -183,12 +183,15 @@ public isolated class ShortTermMemoryStore {
         }
     }
 
-    # Adds a chat message to the memory store for a given key.
+    # Adds one or more chat messages to the memory store for a given key.
     #
     # + key - The key associated with the memory
-    # + message - The `ChatMessage` message to store
+    # + message - The `ChatMessage` message or messages to store
     # + return - nil on success, or an `Error` if the operation fails
-    public isolated function put(string key, ai:ChatMessage message) returns Error? {
+    public isolated function put(string key, ai:ChatMessage|ai:ChatMessage[] message) returns Error? {
+        if message is ai:ChatMessage[] {
+            return self.putAll(key, message);
+        }
         ChatMessageDatabaseMessage dbMessage = transformToDatabaseMessage(message);
 
         if dbMessage is ChatSystemMessageDatabaseMessage {
@@ -245,6 +248,108 @@ public isolated class ShortTermMemoryStore {
                 cacheEntry.interactiveMessages.push(immutableMessage);
             }
         }
+        return;
+    }
+
+    private isolated function putAll(string key, ai:ChatMessage[] messages) returns Error? {
+        if messages.length() == 0 {
+            return;
+        }
+
+        // Separate system and interactive messages
+        final ai:ChatSystemMessage[] systemMsgs = [];
+        final ai:ChatInteractiveMessage[] interactiveMsgs = [];
+
+        foreach ai:ChatMessage msg in messages {
+            if msg is ai:ChatSystemMessage {
+                systemMsgs.push(msg);
+            } else if msg is ai:ChatInteractiveMessage {
+                interactiveMsgs.push(msg);
+            }
+        }
+
+        if systemMsgs.length() > 0 {
+            // Only the last system message is used
+            ai:ChatSystemMessage lastSystem = systemMsgs[systemMsgs.length() - 1];
+            ChatMessageDatabaseMessage dbMessage = transformToDatabaseMessage(lastSystem);
+
+            sql:ExecutionResult|sql:Error upsertResult = self.dbClient->execute(
+                replaceTableNamePlaceholder(`
+                    IF EXISTS (SELECT 1 FROM $_tableName_$ WHERE MessageKey = ${key} AND MessageRole = 'system')
+                        UPDATE $_tableName_$ SET MessageJson = ${dbMessage.toJsonString()}
+                        WHERE MessageKey = ${key} AND MessageRole = 'system'
+                    ELSE
+                        INSERT INTO $_tableName_$ (MessageKey, MessageRole, MessageJson) 
+                        VALUES (${key}, ${dbMessage.role}, ${dbMessage.toJsonString()})`,
+                    self.tableName
+                )
+            );
+            if upsertResult is sql:Error {
+                return error("Failed to upsert system message: " + upsertResult.message(), upsertResult);
+            }
+        }
+
+        // Insert interactive messages in batch
+        if interactiveMsgs.length() > 0 {
+
+            // Fetch current interactive count
+            ai:ChatInteractiveMessage[] chatMsgs = check self.getChatInteractiveMessages(key);
+            int currentCount = chatMsgs.length();
+            int incoming = interactiveMsgs.length();
+
+            if currentCount + incoming > self.maxMessagesPerKey {
+                return error(string `Cannot add more messages.`
+                    + string ` Maximum limit '${self.maxMessagesPerKey}' exceeded for key '${key}'`);
+            }
+
+            sql:ParameterizedQuery[] insertQueries = from ai:ChatInteractiveMessage msg in interactiveMsgs
+                let ChatMessageDatabaseMessage dbMsg = transformToDatabaseMessage(msg)
+                select replaceTableNamePlaceholder(`
+                        INSERT INTO $_tableName_$ (MessageKey, MessageRole, MessageJson) 
+                        VALUES (${key}, ${msg.role}, ${dbMsg.toJsonString()})`,
+                        self.tableName
+                    );
+
+            sql:ExecutionResult[]|sql:Error batchResult = self.dbClient->batchExecute(insertQueries);
+            if batchResult is sql:Error {
+                return error("Failed batch insert of interactive messages: " + batchResult.message(), batchResult);
+            }
+        }
+
+        final readonly & ai:ChatSystemMessage? chatSystemMessage;
+        if systemMsgs.length() > 0 {
+            ai:ChatSystemMessage lastSystem = systemMsgs[systemMsgs.length() - 1];
+            final readonly & ai:ChatMessage immutableMessage = mapToImmutableMessage(lastSystem);
+            if immutableMessage is ai:ChatSystemMessage {
+                chatSystemMessage = immutableMessage;
+            } else {
+                chatSystemMessage = ();
+            }
+        } else {
+            chatSystemMessage = ();
+        }
+
+        final ai:ChatMessage[] & readonly immutableMessages = interactiveMsgs.'map(msg => mapToImmutableMessage(msg))
+            .cloneReadOnly();
+
+        // Update cache
+        lock {
+            CachedMessages? cacheEntry = self.getCacheEntry(key);
+            if cacheEntry is () {
+                return;
+            }
+
+            if chatSystemMessage is ai:ChatSystemMessage {
+                cacheEntry.systemMessage = chatSystemMessage;
+            }
+
+            foreach ai:ChatMessage msg in immutableMessages {
+                if msg is ai:ChatInteractiveMessage {
+                    cacheEntry.interactiveMessages.push(msg);
+                }
+            }
+        }
+        return;
     }
 
     # Removes the system chat message, if specified, for a given key.
@@ -492,6 +597,13 @@ public isolated class ShortTermMemoryStore {
             // `checkpanic` is safe.
             return checkpanic cacheEntry.ensureType();
         }
+    }
+
+    # Retrieves the maximum number of interactive messages that can be stored for each key.
+    #
+    # + return - he configured maximum size of the message store per key
+    public isolated function getSize() returns int {
+        return self.maxMessagesPerKey;
     }
 }
 
