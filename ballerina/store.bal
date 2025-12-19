@@ -212,18 +212,6 @@ public isolated class ShortTermMemoryStore {
             }
         } else {
             do {
-                // Expected to be checked by the caller, but doing an additional check here, without locking.
-                ai:ChatInteractiveMessage[]|Error chatInteractiveMessages = self.getChatInteractiveMessages(key);
-                if chatInteractiveMessages is Error {
-                    error? cause = chatInteractiveMessages.cause();
-                    fail cause is error ? cause : chatInteractiveMessages;
-                }
-
-                if chatInteractiveMessages.length() >= self.maxMessagesPerKey {
-                    return error(string `Cannot add more messages. Maximum limit of '${
-                        self.maxMessagesPerKey}' reached for key: '${key}'`);
-                }
-
                 _ = check self.dbClient->execute(
                     replaceTableNamePlaceholder(`
                         INSERT INTO $_tableName_$ (MessageKey, MessageRole, MessageJson) 
@@ -506,24 +494,6 @@ public isolated class ShortTermMemoryStore {
 
     private isolated function cacheFromDatabase(string key)
             returns readonly & ([ai:ChatSystemMessage, ai:ChatInteractiveMessage...]|ai:ChatInteractiveMessage[])|Error {
-        int|sql:Error messageCount = self.dbClient->queryRow(
-            replaceTableNamePlaceholder(`
-                SELECT COUNT(*) as count 
-                FROM $_tableName_$ 
-                WHERE MessageKey = ${key} AND MessageRole != 'system'`,
-                self.tableName
-                )
-            );
-
-        if messageCount is sql:Error {
-            return error("Failed to load message count from the database: " + messageCount.message(), messageCount);
-        }
-
-        if messageCount > self.maxMessagesPerKey {
-            return error ExceedsSizeError(string `Cannot load messages from the database: Message count '${
-                messageCount}' exceeds maximum limit of '${self.maxMessagesPerKey}' for key: '${key}'`);
-        }
-
         do {
             stream<DatabaseRecord, sql:Error?> messages = self.dbClient->query(
                 replaceTableNamePlaceholder(`
