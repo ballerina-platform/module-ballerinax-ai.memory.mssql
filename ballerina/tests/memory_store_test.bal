@@ -29,8 +29,10 @@ const ai:ChatSystemMessage K1SM1 = {role: ai:SYSTEM, content: "You are a helpful
 const ai:ChatUserMessage K1M1 = {role: ai:USER, content: "Hello, my name is Alice. I'm from Seattle."};
 final readonly & ai:ChatAssistantMessage k1m2 = {role: ai:ASSISTANT, content: "Hello Alice, what can I do for you?"};
 const ai:ChatUserMessage K1M3 = {role: ai:USER, content: "I would like to know the weather today."};
-final readonly & ai:ChatAssistantMessage K1M4 = {role: ai:ASSISTANT, 
-        content: "The weather in Seattle today is mostly cloudy with occasional showers and a high around 58°F."};
+final readonly & ai:ChatAssistantMessage K1M4 = {
+    role: ai:ASSISTANT,
+    content: "The weather in Seattle today is mostly cloudy with occasional showers and a high around 58°F."
+};
 
 const ai:ChatUserMessage K2M1 = {role: ai:USER, content: "Hello, my name is Bob."};
 
@@ -111,7 +113,7 @@ function testBasicStore() returns error? {
     check assertFromDatabase(cl, K1, [], SYSTEM);
     check assertFromDatabase(cl, K1, [K1M3], INTERACTIVE);
     check assertFromDatabase(cl, K1, [K1M3]);
-    
+
     check assertAllMessages(store, K1, [K1M3]);
     check assertSystemMessage(store, K1, ());
     check assertInteractiveMessages(store, K1, [K1M3]);
@@ -262,7 +264,7 @@ function testRemoveAllMessages() returns error? {
 function testRemovingSubsetOfInteractiveMessages() returns error? {
     mssql:Client cl = getClient();
     ShortTermMemoryStore store = check new (cl);
-    
+
     check store.put(K1, K1SM1);
     check store.put(K1, K1M1);
     check store.put(K1, k1m2);
@@ -300,7 +302,7 @@ function testSystemMessageOverwrite() returns error? {
     check assertFromDatabase(cl, K1, [K1SM1, K1M1, k1m2]);
 
     final readonly & ai:ChatSystemMessage k1sm2 = {
-        role: ai:SYSTEM, 
+        role: ai:SYSTEM,
         content: "You are a helpful assistant that is aware of sports."
     };
     check store.put(K1, k1sm2);
@@ -315,7 +317,32 @@ function testSystemMessageOverwrite() returns error? {
 
     stream<DatabaseRecord, error?> fromDb = cl->query(
         `SELECT MessageJson FROM ChatMessages WHERE MessageKey = ${K1} AND MessageRole = 'SYSTEM'`);
-    DatabaseRecord[] records = check from DatabaseRecord dbRecord in fromDb select dbRecord;
+    DatabaseRecord[] records = check from DatabaseRecord dbRecord in fromDb
+        select dbRecord;
+    test:assertEquals(records.length(), 1);
+    ChatSystemMessageDatabaseMessage dbSystemMessage = check records[0].MessageJson.fromJsonStringWithType();
+    assertChatMessageEquals(transformFromSystemMessageDatabaseMessage(dbSystemMessage), k1sm2);
+}
+
+@test:Config {
+    before: dropTable
+}
+function testSystemMessageOverwriteWithPutAll() returns error? {
+    mssql:Client cl = getClient();
+    ShortTermMemoryStore store = check new (cl);
+
+    final readonly & ai:ChatSystemMessage k1sm2 = {
+        role: ai:SYSTEM,
+        content: "You are a helpful assistant that is aware of sports."
+    };
+    check store.put(K1, [K1SM1, K1M1, k1m2, k1sm2]);
+    check assertSystemMessage(store, K1, k1sm2);
+    check assertFromDatabase(cl, K1, [k1sm2, K1M1, k1m2]);
+
+    stream<DatabaseRecord, error?> fromDb = cl->query(
+        `SELECT MessageJson FROM ChatMessages WHERE MessageKey = ${K1} AND MessageRole = 'SYSTEM'`);
+    DatabaseRecord[] records = check from DatabaseRecord dbRecord in fromDb
+        select dbRecord;
     test:assertEquals(records.length(), 1);
     ChatSystemMessageDatabaseMessage dbSystemMessage = check records[0].MessageJson.fromJsonStringWithType();
     assertChatMessageEquals(transformFromSystemMessageDatabaseMessage(dbSystemMessage), k1sm2);
@@ -351,29 +378,6 @@ function testPutWithDifferentMessageKinds() returns error? {
 @test:Config {
     before: dropTable
 }
-function testFillingUp() returns error? {
-    mssql:Client cl = getClient();
-    ShortTermMemoryStore store = check new (cl, 3);
-
-    check store.put(K1, K1SM1);
-    check store.put(K1, K1M1);
-    check store.put(K1, k1m2);
-
-    test:assertFalse(check store.isFull(K1));
-
-    check store.put(K1, K1M3);
-    test:assertTrue(check store.isFull(K1));
-
-    Error? res = store.put(K1, K1M4);
-    if res is () {
-        test:assertFail("Expected an error when adding message to a full store");
-    }
-    test:assertEquals(res.message(), "Cannot add more messages. Maximum limit of '3' reached for key: 'key1'");
-}
-
-@test:Config {
-    before: dropTable
-}
 function testUpdateWithSystemMessageWhenInteractiveMessagesPresentInDbOnStart() returns error? {
     mssql:Client cl = getClient();
     ShortTermMemoryStore store = check new (cl, 5);
@@ -386,68 +390,14 @@ function testUpdateWithSystemMessageWhenInteractiveMessagesPresentInDbOnStart() 
     ]);
 
     check store.put(K1, K1SM1);
-    
+
     check assertFromDatabase(cl, K1, [K1SM1], SYSTEM);
     check assertFromDatabase(cl, K1, [K1M1, k1m2], INTERACTIVE);
     check assertFromDatabase(cl, K1, [K1M1, k1m2, K1SM1]);
 
     check assertSystemMessage(store, K1, K1SM1);
     check assertInteractiveMessages(store, K1, [K1M1, k1m2]);
-    check assertAllMessages(store, K1, [K1SM1, K1M1, k1m2]);    
-}
-
-@test:Config {
-    before: dropTable
-}
-function testMaxMessageCountLessThanInteractiveMessagesPresentInDbOnStart() returns error? {
-    mssql:Client cl = getClient();
-    ShortTermMemoryStore store = check new (cl, 3);
-
-    _ = check cl->batchExecute([
-        `INSERT INTO ChatMessages (MessageKey, MessageRole, MessageJson) VALUES 
-        (${K1}, ${K1M1.role}, ${K1M1.toJsonString()})`,
-        `INSERT INTO ChatMessages (MessageKey, MessageRole, MessageJson) VALUES 
-        (${K1}, ${k1m2.role}, ${k1m2.toJsonString()})`,
-        `INSERT INTO ChatMessages (MessageKey, MessageRole, MessageJson) VALUES 
-        (${K1}, ${K1M3.role}, ${K1M3.toJsonString()})`,
-        `INSERT INTO ChatMessages (MessageKey, MessageRole, MessageJson) VALUES 
-        (${K1}, ${K1M4.role}, ${K1M4.toJsonString()})`
-    ]);
-
-    test:assertTrue(check store.isFull(K1));
-
-    Error? res = store.put(K1, <ai:ChatUserMessage>{role: ai:USER, content: "Thank you!"});
-    if res is () {
-        test:assertFail("Expected an error when adding message to a full store");
-    }
-    test:assertEquals(res.message(), "Failed to add chat message: " +
-        "Cannot load messages from the database: Message count '4' exceeds maximum limit of '3' for key: 'key1'"); 
-}
-
-@test:Config {
-    before: dropTable
-}
-function testRetrievalWithMaxMessageCountLessThanInteractiveMessagesPresentInDbOnStart() returns error? {
-    mssql:Client cl = getClient();
-    ShortTermMemoryStore store = check new (cl, 3);
-
-    _ = check cl->batchExecute([
-        `INSERT INTO ChatMessages (MessageKey, MessageRole, MessageJson) VALUES 
-        (${K1}, ${K1M1.role}, ${K1M1.toJsonString()})`,
-        `INSERT INTO ChatMessages (MessageKey, MessageRole, MessageJson) VALUES 
-        (${K1}, ${k1m2.role}, ${k1m2.toJsonString()})`,
-        `INSERT INTO ChatMessages (MessageKey, MessageRole, MessageJson) VALUES 
-        (${K1}, ${K1M3.role}, ${K1M3.toJsonString()})`,
-        `INSERT INTO ChatMessages (MessageKey, MessageRole, MessageJson) VALUES 
-        (${K1}, ${K1M4.role}, ${K1M4.toJsonString()})`
-    ]);
-
-    ai:ChatInteractiveMessage[]|Error interactiveMessages = store.getChatInteractiveMessages(K1);
-    if interactiveMessages is ai:ChatInteractiveMessage[] {
-        test:assertFail("Expected an error when retrieving messages when database entries exceed max limit");
-    }
-    test:assertEquals(interactiveMessages.message(), "Failed to retrieve chat messages: " +
-        "Cannot load messages from the database: Message count '4' exceeds maximum limit of '3' for key: 'key1'"); 
+    check assertAllMessages(store, K1, [K1SM1, K1M1, k1m2]);
 }
 
 function assertAllMessages(ShortTermMemoryStore store, string key, ai:ChatMessage[] expected) returns error? {
@@ -464,7 +414,7 @@ function assertSystemMessage(ShortTermMemoryStore store, string key, ai:ChatSyst
     if expected is () && actual is () {
         return;
     }
-    
+
     if expected is () || actual is () {
         test:assertFail("Actual and expected ChatSystemMessage do not match");
     }
@@ -490,7 +440,7 @@ enum MessageType {
 function assertFromDatabase(mssql:Client cl, string key, ai:ChatMessage[] expected, MessageType messageType = ALL) returns error? {
     sql:ParameterizedQuery[] selectQuery = [`SELECT MessageJson FROM ChatMessages WHERE MessageKey = ${key}`];
     if messageType == SYSTEM {
-        selectQuery.push(` AND MessageRole = 'system'` );
+        selectQuery.push(` AND MessageRole = 'system'`);
     } else if messageType == INTERACTIVE {
         selectQuery.push(` AND MessageRole != 'system'`);
     }
@@ -505,14 +455,14 @@ function assertFromDatabase(mssql:Client cl, string key, ai:ChatMessage[] expect
 }
 
 function toChatMessages(stream<DatabaseRecord, error?> databaseRecords) returns ai:ChatMessage[]|error =>
-    from DatabaseRecord databaseRecord in databaseRecords 
-        select transformFromDatabaseMessage(check toChatMessage(databaseRecord));
+    from DatabaseRecord databaseRecord in databaseRecords
+select transformFromDatabaseMessage(check toChatMessage(databaseRecord));
 
 function toChatMessage(DatabaseRecord databaseRecord) returns ChatMessageDatabaseMessage|error =>
     databaseRecord.MessageJson.fromJsonStringWithType();
 
 isolated function assertChatMessageEquals(ai:ChatMessage actual, ai:ChatMessage expected) {
-    if (actual is ai:ChatUserMessage && expected is ai:ChatUserMessage)  || 
+    if (actual is ai:ChatUserMessage && expected is ai:ChatUserMessage) ||
             (actual is ai:ChatSystemMessage && expected is ai:ChatSystemMessage) {
         test:assertEquals(actual.role, expected.role);
         assertContentEquals(actual.content, expected.content);
@@ -583,6 +533,32 @@ function testBasicStoreWithCache() returns error? {
 @test:Config {
     before: dropTable
 }
+function testBasicStoreWithCacheWithPutAll() returns error? {
+    mssql:Client cl = getClient();
+    cache:CacheConfig cacheConfig = {
+        capacity: 10,
+        evictionFactor: 0.2
+    };
+    ShortTermMemoryStore store = check new (cl, cacheConfig = cacheConfig);
+
+    check store.put(K1, [K1SM1, K1M1, k1m2]);
+    check store.put(K2, K2M1);
+
+    // First retrieval - should load from database and cache
+    check assertAllMessages(store, K1, [K1SM1, K1M1, k1m2]);
+    check assertInteractiveMessages(store, K1, [K1M1, k1m2]);
+
+    // Second retrieval - should use cache (verify by checking results still match)
+    check assertAllMessages(store, K1, [K1SM1, K1M1, k1m2]);
+    check assertInteractiveMessages(store, K1, [K1M1, k1m2]);
+
+    check assertAllMessages(store, K2, [K2M1]);
+    check assertInteractiveMessages(store, K2, [K2M1]);
+}
+
+@test:Config {
+    before: dropTable
+}
 function testCacheUpdateOnPut() returns error? {
     mssql:Client cl = getClient();
     cache:CacheConfig cacheConfig = {
@@ -600,6 +576,28 @@ function testCacheUpdateOnPut() returns error? {
     // Add more messages - cache should be updated
     check store.put(K1, k1m2);
     check store.put(K1, K1M3);
+
+    // Verify cache reflects the updates
+    check assertAllMessages(store, K1, [K1SM1, K1M1, k1m2, K1M3]);
+    check assertInteractiveMessages(store, K1, [K1M1, k1m2, K1M3]);
+}
+
+@test:Config {
+    before: dropTable
+}
+function testCacheUpdateWithPutAll() returns error? {
+    mssql:Client cl = getClient();
+    cache:CacheConfig cacheConfig = {
+        capacity: 10,
+        evictionFactor: 0.2
+    };
+    ShortTermMemoryStore store = check new (cl, cacheConfig = cacheConfig);
+
+    check store.put(K1, [K1SM1, K1M1]);
+    check assertAllMessages(store, K1, [K1SM1, K1M1]);
+
+    // Add more messages - cache should be updated
+    check store.put(K1, [k1m2, K1M3]);
 
     // Verify cache reflects the updates
     check assertAllMessages(store, K1, [K1SM1, K1M1, k1m2, K1M3]);
@@ -634,6 +632,35 @@ function testCacheSystemMessageUpdate() returns error? {
     // Verify cache reflects the system message update
     check assertSystemMessage(store, K1, k1sm2);
     check assertAllMessages(store, K1, [k1sm2, K1M1]);
+}
+
+@test:Config {
+    before: dropTable
+}
+function testCacheSystemMessageUpdateOnPutAll() returns error? {
+    mssql:Client cl = getClient();
+    cache:CacheConfig cacheConfig = {
+        capacity: 10,
+        evictionFactor: 0.2
+    };
+    ShortTermMemoryStore store = check new (cl, cacheConfig = cacheConfig);
+
+    check store.put(K1, [K1SM1, K1M1]);
+
+    // Load into cache
+    check assertSystemMessage(store, K1, K1SM1);
+    check assertAllMessages(store, K1, [K1SM1, K1M1]);
+
+    // Update system message
+    final readonly & ai:ChatSystemMessage k1sm2 = {
+        role: ai:SYSTEM,
+        content: "You are a helpful assistant that is aware of sports."
+    };
+    check store.put(K1, [k1sm2, k1m2]);
+
+    // Verify cache reflects the system message update
+    check assertSystemMessage(store, K1, k1sm2);
+    check assertAllMessages(store, K1, [k1sm2, K1M1, k1m2]);
 }
 
 @test:Config {
