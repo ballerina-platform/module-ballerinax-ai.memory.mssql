@@ -10,3 +10,9 @@ repository = "https://github.com/ballerina-platform/module-ballerinax-ai.memory.
 
 [platform.java21]
 graalvmCompatible = true
+
+[[dependency]]
+repository="local"
+name="ai"
+org="ballerina"
+version="1.2.0"
