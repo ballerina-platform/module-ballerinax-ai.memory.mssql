@@ -2,6 +2,13 @@
 
 This module provides an MS SQL-backed short-term memory store to use with AI messages (e.g., with AI agents, model providers, etc.).
 
+### Key Features
+
+- MS SQL-backed persistent storage for short-term AI message memory
+- Configurable maximum messages per key with automatic eviction
+- Built-in in-memory caching for improved read performance
+- Support for both direct database configuration and existing MSSQL client reuse
+
 ## Prerequisites
 
 - Configuration for an MS SQL database
