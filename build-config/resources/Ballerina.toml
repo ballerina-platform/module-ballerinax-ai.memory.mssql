@@ -5,7 +5,7 @@ name = "ai.memory.mssql"
 version = "@toml.version@"
 license = ["Apache-2.0"]
 authors = ["Ballerina"]
-keywords = ["ai", "agent", "memory"]
+keywords = ["Type/Connector", "Vendor/Microsoft", "Area/AI & Machine Learning", "Area/Database"]
 repository = "https://github.com/ballerina-platform/module-ballerinax-ai.memory.mssql"
 
 [platform.java21]
