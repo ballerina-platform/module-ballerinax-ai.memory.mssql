@@ -16,9 +16,9 @@ This module provides an MS SQL-backed short-term memory store to use with AI mes
 
 ### Database tables
 
-This store uses two tables. Production deployments are expected to provision both up front, typically by a DBA, rather than relying on the application to create them.
+This store uses two tables, one for the chat history and one for human-in-the-loop pause state. You name them with the `tableName` and `checkpointTableName` parameters when creating the store. Production deployments are expected to provision both up front, typically by a DBA, rather than relying on the application to create them.
 
-`ChatMessages` holds the chat history. The store creates this table at initialization if it does not already exist, which is convenient for development, but in production create it beforehand:
+The chat history table is created at initialization if it does not already exist, which is convenient for development, but in production create it beforehand. Use the name you pass as `tableName`, which defaults to `ChatMessages`:
 
 ```sql
 CREATE TABLE ChatMessages (
@@ -30,7 +30,7 @@ CREATE TABLE ChatMessages (
 );
 ```
 
-`Checkpoints` holds human-in-the-loop pause state. The store never creates this table, so it must exist before an agent with approval-gated tools runs. A deployment that does not use human-in-the-loop does not need it at all:
+The checkpoint table holds human-in-the-loop pause state. The store never creates it, so it must exist before an agent with approval-gated tools runs. A deployment that does not use human-in-the-loop does not need it at all. Use the name you pass as `checkpointTableName`, which defaults to `Checkpoints`:
 
 ```sql
 CREATE TABLE Checkpoints (
@@ -39,8 +39,6 @@ CREATE TABLE Checkpoints (
     UpdatedAt DATETIME2 NOT NULL DEFAULT SYSDATETIME()
 );
 ```
-
-Pass `tableName` and `checkpointTableName` if your tables are named something other than `ChatMessages` and `Checkpoints`.
 
 ## Quickstart
 
