@@ -170,7 +170,7 @@ type ApprovalDatabaseMessage record {|
     time:Utc startTime;
     ai:FunctionCall[] originalBatch;
     ai:ApprovalRequest[] pendingRequests;
-    ai:HumanResponse?[] decisions;
+    ai:HumanDecision?[] decisions;
 |};
 
 isolated function toStoredIterationOutput(ai:ChatAssistantMessage|ai:ChatFunctionMessage|ai:Error output)
