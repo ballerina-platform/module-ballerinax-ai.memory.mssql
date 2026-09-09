@@ -68,6 +68,23 @@ function dropTable() returns error? {
     }
 }
 
+// The checkpoint table schema. The store never creates this table; a deployment provisions it, so
+// tests that exercise checkpoint operations must stand in for that deployment.
+final sql:ParameterizedQuery createCheckpointTableQuery = `
+    CREATE TABLE Checkpoints (
+        SessionId NVARCHAR(100) NOT NULL PRIMARY KEY,
+        ApprovalJson NVARCHAR(MAX) NOT NULL,
+        UpdatedAt DATETIME2 NOT NULL DEFAULT SYSDATETIME()
+    );`;
+
+// `before` hook for tests that exercise checkpoint operations: clean slate, plus the
+// deployment-provisioned checkpoint table those operations require.
+function dropTableAndProvisionCheckpoints() returns error? {
+    check dropTable();
+    mssql:Client cl = getClient();
+    _ = check cl->execute(createCheckpointTableQuery);
+}
+
 @test:Config {
     before: dropTable
 }
@@ -917,7 +934,7 @@ function buildPendingApproval(string sessionId) returns ai:PendingApproval {
 }
 
 @test:Config {
-    before: dropTable
+    before: dropTableAndProvisionCheckpoints
 }
 function testCheckpointPersistAndRetrieve() returns error? {
     mssql:Client cl = getClient();
@@ -938,7 +955,7 @@ function testCheckpointPersistAndRetrieve() returns error? {
 }
 
 @test:Config {
-    before: dropTable
+    before: dropTableAndProvisionCheckpoints
 }
 function testCheckpointReplace() returns error? {
     mssql:Client cl = getClient();
@@ -956,7 +973,7 @@ function testCheckpointReplace() returns error? {
 }
 
 @test:Config {
-    before: dropTable
+    before: dropTableAndProvisionCheckpoints
 }
 function testTakeCheckpointClaimsAtomically() returns error? {
     mssql:Client cl = getClient();
@@ -973,7 +990,7 @@ function testTakeCheckpointClaimsAtomically() returns error? {
 }
 
 @test:Config {
-    before: dropTable
+    before: dropTableAndProvisionCheckpoints
 }
 function testRemoveCheckpoint() returns error? {
     mssql:Client cl = getClient();
@@ -988,7 +1005,7 @@ function testRemoveCheckpoint() returns error? {
 }
 
 @test:Config {
-    before: dropTable
+    before: dropTableAndProvisionCheckpoints
 }
 function testCheckpointClearedOnRemoveAll() returns error? {
     mssql:Client cl = getClient();
@@ -1005,7 +1022,7 @@ function testCheckpointClearedOnRemoveAll() returns error? {
 }
 
 @test:Config {
-    before: dropTable
+    before: dropTableAndProvisionCheckpoints
 }
 function testCheckpointErrorOutputStringified() returns error? {
     mssql:Client cl = getClient();
@@ -1034,7 +1051,7 @@ function testCheckpointErrorOutputStringified() returns error? {
 }
 
 @test:Config {
-    before: dropTable
+    before: dropTableAndProvisionCheckpoints
 }
 function testCheckpointWithPromptContent() returns error? {
     mssql:Client cl = getClient();
@@ -1074,7 +1091,107 @@ function testCheckpointTableNotCreatedOnInit() returns error? {
     int tableExists = check cl->queryRow(
         `SELECT IIF(OBJECT_ID('dbo.Checkpoints', 'U') IS NOT NULL, 1, 0) AS TableExists;`);
     test:assertEquals(tableExists, 0,
-            "Checkpoint table should not be created until a checkpoint operation is performed");
+            "The checkpoint table is the deployment's to provision, never the store's to create");
+}
+
+@test:Config {
+    before: dropTable
+}
+function testStoreNeverCreatesCheckpointTable() returns error? {
+    mssql:Client cl = getClient();
+    ShortTermMemoryStore store = check new (cl);
+
+    // Nothing the store does creates the checkpoint table: not initialization, not the message
+    // operations, and not `removeAll`, which touches the checkpoint table when it exists.
+    check store.put(K1, K1SM1);
+    check store.put(K1, K1M1);
+    _ = check store.getAll(K1);
+    check store.removeAll(K1);
+
+    int tableExists = check cl->queryRow(
+        `SELECT IIF(OBJECT_ID('dbo.Checkpoints', 'U') IS NOT NULL, 1, 0) AS TableExists;`);
+    test:assertEquals(tableExists, 0, "The store must never create the checkpoint table");
+}
+
+@test:Config {
+    before: dropTable
+}
+function testCheckpointOperationsFailWithoutTable() returns error? {
+    mssql:Client cl = getClient();
+    ShortTermMemoryStore store = check new (cl);
+
+    // The checkpoint table is the deployment's to provision. If it is missing, every checkpoint
+    // operation surfaces the database's own error naming the table, rather than silently creating
+    // it or pretending nothing is pending.
+    ai:PendingApproval?|Error read = store.getCheckpoint(K1);
+    if read !is Error {
+        test:assertFail("Expected an error when reading a checkpoint without a checkpoint table");
+    }
+    test:assertTrue(read.message().includes("Checkpoints"), read.message());
+
+    Error? written = store.putCheckpoint(buildPendingApproval(K1));
+    if written !is Error {
+        test:assertFail("Expected an error when persisting a checkpoint without a checkpoint table");
+    }
+    test:assertTrue(written.message().includes("Checkpoints"), written.message());
+
+    ai:PendingApproval?|Error claimed = store.takeCheckpoint(K1);
+    if claimed !is Error {
+        test:assertFail("Expected an error when claiming a checkpoint without a checkpoint table");
+    }
+    test:assertTrue(claimed.message().includes("Checkpoints"), claimed.message());
+
+    Error? removed = store.removeCheckpoint(K1);
+    if removed !is Error {
+        test:assertFail("Expected an error when removing a checkpoint without a checkpoint table");
+    }
+    test:assertTrue(removed.message().includes("Checkpoints"), removed.message());
+
+    int tableExists = check cl->queryRow(
+        `SELECT IIF(OBJECT_ID('dbo.Checkpoints', 'U') IS NOT NULL, 1, 0) AS TableExists;`);
+    test:assertEquals(tableExists, 0, "A failed checkpoint operation must not create the table");
+}
+
+@test:Config {
+    before: dropTableAndProvisionCheckpoints
+}
+function testCheckpointsSharedAcrossStoreInstances() returns error? {
+    mssql:Client cl = getClient();
+    // Two store instances over one provisioned table. Neither holds per-instance state about the
+    // table, so a checkpoint written by one is immediately visible to the other, the way two
+    // replicas or a restarted process would see it.
+    ShortTermMemoryStore storeA = check new (cl);
+    check storeA.putCheckpoint(buildPendingApproval(K1));
+
+    ShortTermMemoryStore storeB = check new (cl);
+    ai:PendingApproval second = buildPendingApproval(K2);
+    check storeB.putCheckpoint(second);
+
+    assertCheckpointEquals(check storeB.getCheckpoint(K2), second);
+    assertCheckpointEquals(check storeB.getCheckpoint(K1), buildPendingApproval(K1));
+    assertCheckpointEquals(check storeA.takeCheckpoint(K2), second);
+}
+
+@test:Config {
+    before: dropTable
+}
+function testCheckpointTableWithExtraColumn() returns error? {
+    mssql:Client cl = getClient();
+    // A provisioned table carrying an extra nullable column works as-is: the store never validates
+    // or migrates the schema, it just reads and writes the columns it knows about.
+    _ = check cl->execute(`
+        CREATE TABLE Checkpoints (
+            SessionId NVARCHAR(100) NOT NULL PRIMARY KEY,
+            ApprovalJson NVARCHAR(MAX) NOT NULL,
+            UpdatedAt DATETIME2 NOT NULL DEFAULT SYSDATETIME(),
+            OperatorNote NVARCHAR(200) NULL
+        );`);
+
+    ShortTermMemoryStore store = check new (cl);
+    ai:PendingApproval approval = buildPendingApproval(K1);
+    check store.putCheckpoint(approval);
+
+    assertCheckpointEquals(check store.takeCheckpoint(K1), approval);
 }
 
 @test:Config {
@@ -1082,21 +1199,22 @@ function testCheckpointTableNotCreatedOnInit() returns error? {
 }
 function testCustomCheckpointTableName() returns error? {
     mssql:Client cl = getClient();
-    ShortTermMemoryStore store = check new (cl, checkpointTableName = "CustomCheckpoints");
+    _ = check cl->execute(`
+        CREATE TABLE CustomCheckpoints (
+            SessionId NVARCHAR(100) NOT NULL PRIMARY KEY,
+            ApprovalJson NVARCHAR(MAX) NOT NULL,
+            UpdatedAt DATETIME2 NOT NULL DEFAULT SYSDATETIME()
+        );`);
 
+    ShortTermMemoryStore store = check new (cl, checkpointTableName = "CustomCheckpoints");
     ai:PendingApproval approval = buildPendingApproval(K1);
     check store.putCheckpoint(approval);
-
-    int customTableExists = check cl->queryRow(
-        `SELECT IIF(OBJECT_ID('dbo.CustomCheckpoints', 'U') IS NOT NULL, 1, 0) AS TableExists;`);
-    test:assertEquals(customTableExists, 1, "Expected the custom checkpoint table to be created");
+    assertCheckpointEquals(check store.getCheckpoint(K1), approval);
 
     // The default-named table should not have been touched.
     int defaultTableExists = check cl->queryRow(
         `SELECT IIF(OBJECT_ID('dbo.Checkpoints', 'U') IS NOT NULL, 1, 0) AS TableExists;`);
-    test:assertEquals(defaultTableExists, 0, "Default-named checkpoint table should not have been created");
-
-    assertCheckpointEquals(check store.getCheckpoint(K1), approval);
+    test:assertEquals(defaultTableExists, 0, "Only the configured checkpoint table should be used");
 
     // Clean up the custom table so it doesn't leak into other test runs.
     _ = check cl->execute(`DROP TABLE dbo.CustomCheckpoints;`);
@@ -1116,9 +1234,9 @@ function testInvalidCheckpointTableName() {
 function testCheckpointTableNameCollidingWithMessagesTableRejected() {
     mssql:Client cl = getClient();
     // Without this check, `initializeDatabase()` creates the messages schema under this name
-    // eagerly at init, and `ensureCheckpointTable()`'s idempotent create then silently no-ops
-    // against it later - so every checkpoint operation would fail with a confusing SQL error
-    // (missing SessionId/ApprovalJson columns) instead of a clear error here.
+    // eagerly at init, and the checkpoint operations then run against it - so every one of them
+    // would fail with a confusing SQL error (missing SessionId/ApprovalJson columns) instead of a
+    // clear error here.
     ShortTermMemoryStore|Error store = new (cl, checkpointTableName = "ChatMessages");
     if store !is Error {
         test:assertFail("Expected an error when checkpointTableName collides with tableName");
