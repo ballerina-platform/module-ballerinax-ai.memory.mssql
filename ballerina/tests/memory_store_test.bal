@@ -965,7 +965,7 @@ function testCheckpointReplace() returns error? {
 
     ai:PendingApproval updated = buildPendingApproval(K1);
     updated.iterationsUsed = 5;
-    updated.decisions = [{decision: ai:APPROVE, reason: "looks good"}];
+    updated.decisions = [{outcome: ai:APPROVE, reason: "looks good"}];
     check store.putCheckpoint(updated);
 
     // The second put replaces the first rather than adding a duplicate row.
